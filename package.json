@@ -4,6 +4,7 @@
   "main": "expo-router/entry",
   "dependencies": {
     "@expo/metro-runtime": "~56.0.12",
+    "@expo/vector-icons": "^15.0.2",
     "@hookform/resolvers": "^5.4.0",
     "@supabase/supabase-js": "^2.106.1",
     "@tanstack/react-query": "^5.100.14",
