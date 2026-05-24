@@ -1,7 +1,7 @@
 {
   "name": "butterfly-trading",
   "version": "1.0.0",
-  "main": "index.ts",
+  "main": "expo-router/entry",
   "dependencies": {
     "@expo/metro-runtime": "~56.0.12",
     "@hookform/resolvers": "^5.4.0",
