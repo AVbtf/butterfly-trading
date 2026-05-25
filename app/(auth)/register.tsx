@@ -19,6 +19,7 @@ export default function Register() {
         await supabase.from('users').insert({
           user_id: data.user.id,
           email: data.user.email,
+          kyc_status: 'pending',
         })
       }
       Alert.alert('Success', 'Check your email to confirm your account')
