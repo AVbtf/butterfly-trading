@@ -23,17 +23,17 @@ export default function KycResultScreen() {
         </Text>
         <Text style={styles.subtitle}>
           {approved
-            ? 'Your identity has been verified. You can now start trading on Butterfly.'
+            ? 'Your identity has been verified. Now let\'s set up your account.'
             : 'We were unable to verify your identity. Please try again or contact support.'}
         </Text>
 
         {approved ? (
           <TouchableOpacity
             style={styles.primaryButton}
-            onPress={() => router.replace('/(app)/home')}
+            onPress={() => router.replace('/(onboarding)/account-type')}
             activeOpacity={0.85}
           >
-            <Text style={styles.primaryButtonText}>Start trading</Text>
+            <Text style={styles.primaryButtonText}>Set up your account</Text>
             <Ionicons name="arrow-forward" size={18} color="#fff" />
           </TouchableOpacity>
         ) : (

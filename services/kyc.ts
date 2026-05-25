@@ -21,4 +21,9 @@ export const kycService = {
     await new Promise<void>((resolve) => setTimeout(resolve, 2500));
     return 'approved';
   },
+
+  async getStatus(): Promise<KycStatus> {
+    await new Promise<void>((resolve) => setTimeout(resolve, 300));
+    return 'approved';
+  },
 };
