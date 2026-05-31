@@ -2,8 +2,6 @@ import { useEffect, useState } from 'react';
 import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { Tabs, router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { kycService } from '../../services/kyc';
-import { accountService } from '../../services/account';
 import { supabase } from '../../lib/supabase';
 
 export default function AppLayout() {
@@ -17,18 +15,26 @@ export default function AppLayout() {
         const { data: { session } } = await supabase.auth.getSession();
         if (!session) return;
 
-        const status = await kycService.getStatus();
+        const { data: userData } = await supabase
+          .from('users')
+          .select('kyc_status')
+          .eq('user_id', session.user.id)
+          .single();
         if (cancelled) return;
 
-        if (status !== 'approved') {
+        if (userData?.kyc_status !== 'approved') {
           router.replace('/(onboarding)/kyc-intro');
           return;
         }
 
-        const accounts = await accountService.getAccounts();
+        const { data: accountData } = await supabase
+          .from('accounts')
+          .select('account_id')
+          .eq('user_id', session.user.id)
+          .limit(1);
         if (cancelled) return;
 
-        if (accounts.length === 0) {
+        if (!accountData || accountData.length === 0) {
           router.replace('/(onboarding)/account-type');
           return;
         }
