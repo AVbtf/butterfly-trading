@@ -93,9 +93,7 @@ export default function AccountTypeScreen() {
     <SafeAreaView style={styles.safe}>
       {/* Nav */}
       <View style={styles.nav}>
-        <TouchableOpacity onPress={() => router.back()} hitSlop={12}>
-          <Ionicons name="chevron-back" size={24} color="#FFFFFF" />
-        </TouchableOpacity>
+        <View style={{ width: 24 }} />
         <View style={styles.progressTrack}>
           <View style={[styles.progressFill, { width: '25%' }]} />
         </View>

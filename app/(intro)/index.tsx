@@ -1,16 +1,20 @@
 /**
- * app/index.tsx
+ * app/(intro)/index.tsx  (or app/intro.tsx if using a single file)
  *
- * Launch entry point + intro slides.
+ * First-launch intro screens for Butterfly Trading.
  *
- * On mount, checks AsyncStorage for 'hasSeenIntro':
- *   → seen     → router.replace('/(auth)/login')
- *   → not seen → render intro slides directly
+ * Flow:
+ *   First visit  → intro → /(auth)/register
+ *   Return visit → skipped entirely (AsyncStorage flag)
  *
- * On Get Started / Skip → set hasSeenIntro → router.replace('/(auth)/register')
+ * Two screens:
+ *   1. What Butterfly Trading is
+ *   2. Impact wallet & directed giving
+ *
+ * On "Get started" → sets 'hasSeenIntro' in AsyncStorage → routes to register.
  */
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -19,7 +23,6 @@ import {
   SafeAreaView,
   ScrollView,
   Dimensions,
-  ActivityIndicator,
   NativeScrollEvent,
   NativeSyntheticEvent,
 } from 'react-native';
@@ -30,6 +33,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+export const INTRO_SEEN_KEY = 'hasSeenIntro';
 
 // ─── Slide definitions ────────────────────────────────────────────────────────
 
@@ -72,31 +76,10 @@ const SLIDES: Slide[] = [
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-export default function Index() {
-  const [checking, setChecking] = useState(true);
+export default function IntroScreen() {
   const [activeIndex, setActiveIndex] = useState(0);
   const scrollRef = useRef<ScrollView>(null);
   const isLast = activeIndex === SLIDES.length - 1;
-
-  useEffect(() => {
-    const check = async () => {
-      try {
-        const seen = await AsyncStorage.getItem('hasSeenIntro');
-        console.log('[index] hasSeenIntro =', seen);
-        console.log('[index] seen:', seen, 'checking complete');
-        if (seen) {
-          console.log('[index] routing to login');
-          router.replace('/(auth)/login');
-        } else {
-          setChecking(false);
-        }
-      } catch {
-        // Fail safe — show intro rather than skip it
-        setChecking(false);
-      }
-    };
-    check();
-  }, []);
 
   const handleScroll = (e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const index = Math.round(e.nativeEvent.contentOffset.x / SCREEN_WIDTH);
@@ -113,30 +96,22 @@ export default function Index() {
 
   const handleGetStarted = async () => {
     try {
-      await AsyncStorage.setItem('hasSeenIntro', 'true');
+      await AsyncStorage.setItem(INTRO_SEEN_KEY, 'true');
     } catch {
-      console.warn('[index] Failed to persist hasSeenIntro');
+      // Non-fatal — worst case they see intro again next launch
+      console.warn('[Intro] Failed to persist hasSeenIntro');
     }
-    console.log('[index] routing to register');
     router.replace('/(auth)/register');
   };
 
   const handleSkip = async () => {
     try {
-      await AsyncStorage.setItem('hasSeenIntro', 'true');
+      await AsyncStorage.setItem(INTRO_SEEN_KEY, 'true');
     } catch {
-      console.warn('[index] Failed to persist hasSeenIntro');
+      console.warn('[Intro] Failed to persist hasSeenIntro');
     }
     router.replace('/(auth)/register');
   };
-
-  if (checking) {
-    return (
-      <View style={styles.loading}>
-        <ActivityIndicator size="large" color="#7C6FFF" />
-      </View>
-    );
-  }
 
   return (
     <SafeAreaView style={styles.safe}>
@@ -249,12 +224,6 @@ export default function Index() {
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  loading: {
-    flex: 1,
-    backgroundColor: '#0A0A0F',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   safe: { flex: 1, backgroundColor: '#0A0A0F' },
 
   // ── Top bar ──

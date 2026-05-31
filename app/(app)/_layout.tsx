@@ -3,6 +3,7 @@ import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { Tabs, router } from 'expo-router';
 import { kycService } from '../../services/kyc';
 import { accountService } from '../../services/account';
+import { supabase } from '../../lib/supabase';
 
 export default function AppLayout() {
   const [ready, setReady] = useState(false);
@@ -12,6 +13,9 @@ export default function AppLayout() {
 
     async function gate() {
       try {
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session) return;
+
         const status = await kycService.getStatus();
         if (cancelled) return;
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Stack, router } from 'expo-router'
 import { supabase } from '../lib/supabase'
 import { Session } from '@supabase/supabase-js'
+import AsyncStorage from '@react-native-async-storage/async-storage'
 
 type KycStatus = 'pending' | 'in_review' | 'approved' | 'rejected'
 
@@ -31,21 +32,31 @@ export default function RootLayout() {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
       setSession(session)
       setInitialized(true)
       if (session?.user) {
         routeByKycStatus(session.user.id)
+      } else {
+        const seen = await AsyncStorage.getItem('hasSeenIntro')
+        if (!seen) {
+          router.replace('/')
+        }
       }
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
+      async (_event, session) => {
         setSession(session)
         if (session?.user) {
           routeByKycStatus(session.user.id)
         } else {
-          router.replace('/(auth)/login')
+          const seen = await AsyncStorage.getItem('hasSeenIntro')
+          if (seen) {
+            router.replace('/(auth)/login')
+          } else {
+            router.replace('/')
+          }
         }
       }
     )
@@ -57,6 +68,8 @@ export default function RootLayout() {
 
   return (
     <Stack screenOptions={{ headerShown: false }}>
+      <Stack.Screen name="index" options={{ headerShown: false }} />
+      <Stack.Screen name="(intro)" options={{ headerShown: false }} />
       <Stack.Screen name="(auth)/login" />
       <Stack.Screen name="(auth)/register" />
       <Stack.Screen name="(app)" />
