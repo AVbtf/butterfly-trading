@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert } from 'react-native'
 import { supabase } from '../../lib/supabase'
-import { Link, router } from 'expo-router'
+import { Link } from 'expo-router'
 
 export default function Login() {
   const [email, setEmail] = useState('')
@@ -47,14 +47,7 @@ export default function Login() {
         </Text>
       </TouchableOpacity>
 
-      <TouchableOpacity
-        style={[styles.button, { backgroundColor: '#7C6FFF', marginTop: 8 }]}
-        onPress={() => router.push('/(onboarding)/kyc-intro')}
-      >
-        <Text style={styles.buttonText}>Test KYC flow</Text>
-      </TouchableOpacity>
-
-      <Link href="/register" style={styles.link}>
+      <Link href="/(auth)/register" style={styles.link}>
         Don't have an account? Register
       </Link>
     </View>

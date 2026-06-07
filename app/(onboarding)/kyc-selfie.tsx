@@ -1,19 +1,33 @@
 import { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, Alert } from 'react-native';
+import {
+  View, Text, StyleSheet, TouchableOpacity, SafeAreaView, Alert,
+} from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { kycService } from '../../services/kyc';
 
+type CaptureState = 'idle' | 'captured';
+
+const TIPS = [
+  'Look directly at the camera',
+  'Ensure your face is well-lit',
+  'Remove glasses or hats if possible',
+  'Keep a neutral expression',
+];
+
 export default function KycSelfieScreen() {
-  const [captured, setCaptured] = useState(false);
+  const [captureState, setCaptureState] = useState<CaptureState>('idle');
   const [loading, setLoading] = useState(false);
 
-  const handleMockCapture = () => {
+  const handleMockSelfie = () => {
     Alert.alert(
-      'Mock capture',
-      'Simulating selfie — in production this opens the Onfido face capture SDK.',
+      'Mock selfie',
+      'In production this launches the Onfido liveness check. Simulating success.',
       [
-        { text: 'Simulate capture', onPress: () => setCaptured(true) },
+        {
+          text: 'Simulate liveness check',
+          onPress: () => setCaptureState('captured'),
+        },
         { text: 'Cancel', style: 'cancel' },
       ],
     );
@@ -24,7 +38,7 @@ export default function KycSelfieScreen() {
     try {
       await kycService.submitSelfie();
       router.push('/(onboarding)/kyc-processing');
-    } catch {
+    } catch (e) {
       Alert.alert('Error', 'Something went wrong. Please try again.');
     } finally {
       setLoading(false);
@@ -44,34 +58,41 @@ export default function KycSelfieScreen() {
       </View>
 
       <View style={styles.container}>
-        <Text style={styles.title}>Take a selfie</Text>
+        <Text style={styles.title}>Selfie check</Text>
         <Text style={styles.subtitle}>
-          We need a clear photo of your face to match against your ID document.
+          We need a quick liveness check to confirm this is you, not a photo.
         </Text>
 
         <TouchableOpacity
-          style={[styles.captureArea, captured && styles.captureAreaDone]}
-          onPress={handleMockCapture}
-          activeOpacity={0.8}
+          style={[styles.cameraFrame, captureState === 'captured' && styles.cameraFrameDone]}
+          onPress={captureState === 'idle' ? handleMockSelfie : undefined}
+          activeOpacity={captureState === 'idle' ? 0.85 : 1}
         >
-          {captured ? (
-            <Ionicons name="checkmark-circle" size={48} color="#34D399" />
+          {captureState === 'captured' ? (
+            <>
+              <View style={styles.successCircle}>
+                <Ionicons name="checkmark" size={44} color="#fff" />
+              </View>
+              <Text style={styles.cameraLabel}>Liveness check passed</Text>
+              <TouchableOpacity onPress={handleMockSelfie} style={styles.retakeLink}>
+                <Text style={styles.retakeLinkText}>Retake</Text>
+              </TouchableOpacity>
+            </>
           ) : (
-            <Ionicons name="person-circle-outline" size={72} color="#7C6FFF" />
+            <>
+              <View style={styles.faceOval} />
+              <View style={styles.cameraButton}>
+                <Ionicons name="camera" size={28} color="#7C6FFF" />
+              </View>
+              <Text style={styles.cameraLabel}>Tap to start liveness check</Text>
+            </>
           )}
-          <Text style={[styles.captureLabel, captured && styles.captureLabelDone]}>
-            {captured ? 'Selfie captured — tap to retake' : 'Tap to take selfie'}
-          </Text>
         </TouchableOpacity>
 
-        <View style={styles.tips}>
-          {[
-            'Face the camera directly',
-            'Make sure your face is well-lit',
-            'Remove sunglasses or hats',
-          ].map((tip, i) => (
-            <View key={i} style={styles.tip}>
-              <Ionicons name="checkmark" size={14} color="#7C6FFF" />
+        <View style={styles.tipsCard}>
+          {TIPS.map((tip) => (
+            <View key={tip} style={styles.tipRow}>
+              <Ionicons name="checkmark-circle" size={15} color="#7C6FFF" />
               <Text style={styles.tipText}>{tip}</Text>
             </View>
           ))}
@@ -80,13 +101,13 @@ export default function KycSelfieScreen() {
 
       <View style={styles.footer}>
         <TouchableOpacity
-          style={[styles.primaryButton, !captured && styles.primaryButtonDisabled]}
+          style={[styles.primaryButton, captureState !== 'captured' && styles.primaryButtonDisabled]}
           onPress={handleContinue}
-          disabled={!captured || loading}
+          disabled={captureState !== 'captured' || loading}
           activeOpacity={0.85}
         >
           <Text style={styles.primaryButtonText}>
-            {loading ? 'Uploading…' : 'Continue'}
+            {loading ? 'Submitting…' : 'Submit for review'}
           </Text>
           {!loading && <Ionicons name="arrow-forward" size={18} color="#fff" />}
         </TouchableOpacity>
@@ -114,7 +135,7 @@ const styles = StyleSheet.create({
   },
   progressFill: { height: '100%', backgroundColor: '#7C6FFF', borderRadius: 2 },
   progressLabel: { fontSize: 12, color: '#9B9BB4', width: 32, textAlign: 'right' },
-  container: { flex: 1, paddingHorizontal: 24, paddingTop: 8 },
+  container: { flex: 1, padding: 24 },
   title: {
     fontSize: 24,
     fontWeight: '700',
@@ -122,32 +143,71 @@ const styles = StyleSheet.create({
     marginBottom: 6,
     letterSpacing: -0.3,
   },
-  subtitle: { fontSize: 15, color: '#9B9BB4', marginBottom: 32, lineHeight: 21 },
-  captureArea: {
-    borderRadius: 20,
-    borderWidth: 2,
-    borderColor: 'rgba(124, 111, 255, 0.3)',
-    borderStyle: 'dashed',
-    backgroundColor: 'rgba(124, 111, 255, 0.06)',
-    height: 220,
+  subtitle: { fontSize: 15, color: '#9B9BB4', marginBottom: 28, lineHeight: 21 },
+  cameraFrame: {
+    height: 300,
+    backgroundColor: '#141420',
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 12,
-    marginBottom: 28,
+    marginBottom: 20,
+    overflow: 'hidden',
+    gap: 16,
   },
-  captureAreaDone: {
+  cameraFrameDone: {
     borderColor: '#34D399',
     backgroundColor: 'rgba(52, 211, 153, 0.06)',
   },
-  captureLabel: { fontSize: 15, color: '#7C6FFF', fontWeight: '500' },
-  captureLabelDone: { color: '#34D399' },
-  tips: { gap: 10 },
-  tip: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  faceOval: {
+    width: 140,
+    height: 180,
+    borderRadius: 70,
+    borderWidth: 2,
+    borderColor: 'rgba(124, 111, 255, 0.5)',
+    borderStyle: 'dashed',
+    position: 'absolute',
+    top: 40,
+  },
+  cameraButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(124, 111, 255, 0.15)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 140,
+  },
+  cameraLabel: {
+    fontSize: 14,
+    color: '#9B9BB4',
+    textAlign: 'center',
+  },
+  successCircle: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: '#34D399',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 4,
+  },
+  retakeLink: { marginTop: 4 },
+  retakeLinkText: { fontSize: 13, color: '#7C6FFF' },
+  tipsCard: {
+    backgroundColor: '#141420',
+    borderRadius: 14,
+    padding: 16,
+    gap: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  tipRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   tipText: { fontSize: 14, color: '#9B9BB4' },
   footer: {
     padding: 24,
     paddingBottom: 36,
-    backgroundColor: '#0A0A0F',
     borderTopWidth: 1,
     borderTopColor: 'rgba(255,255,255,0.06)',
   },

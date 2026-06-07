@@ -1,98 +1,142 @@
-import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, ScrollView } from 'react-native';
 import { router } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 
 const STEPS = [
-  { icon: 'card-outline' as const, label: 'Scan your ID document' },
-  { icon: 'camera-outline' as const, label: 'Take a quick selfie' },
-  { icon: 'checkmark-circle-outline' as const, label: 'Instant automated review' },
+  {
+    icon: 'card-outline' as const,
+    title: 'Photo ID',
+    description: 'Passport, driving licence, or national ID card',
+  },
+  {
+    icon: 'camera-outline' as const,
+    title: 'Selfie check',
+    description: 'A quick liveness check to confirm it\'s really you',
+  },
+  {
+    icon: 'checkmark-circle-outline' as const,
+    title: 'Instant review',
+    description: 'We\'ll verify your identity and let you know straight away',
+  },
 ];
 
 export default function KycIntroScreen() {
   return (
     <SafeAreaView style={styles.safe}>
-      <View style={styles.container}>
-        <View style={styles.iconWrap}>
-          <Ionicons name="shield-checkmark-outline" size={52} color="#7C6FFF" />
+      <ScrollView contentContainerStyle={styles.container} showsVerticalScrollIndicator={false}>
+        <View style={styles.header}>
+          <View style={styles.iconWrap}>
+            <Ionicons name="shield-checkmark" size={36} color="#7C6FFF" />
+          </View>
+          <Text style={styles.title}>Verify your identity</Text>
+          <Text style={styles.subtitle}>
+            UK regulations require us to confirm who you are before you can invest.
+            This takes around 2 minutes.
+          </Text>
         </View>
 
-        <Text style={styles.title}>Verify your identity</Text>
-        <Text style={styles.subtitle}>
-          UK regulations require us to confirm who you are before you can trade. It takes
-          under two minutes.
-        </Text>
-
-        <View style={styles.steps}>
-          {STEPS.map((step, i) => (
-            <View key={i} style={styles.step}>
-              <View style={styles.stepIcon}>
-                <Ionicons name={step.icon} size={20} color="#7C6FFF" />
+        <View style={styles.stepsCard}>
+          {STEPS.map((step, index) => (
+            <View key={step.title} style={styles.step}>
+              <View style={styles.stepLeft}>
+                <View style={styles.stepIconWrap}>
+                  <Ionicons name={step.icon} size={20} color="#7C6FFF" />
+                </View>
+                {index < STEPS.length - 1 && <View style={styles.stepConnector} />}
               </View>
-              <Text style={styles.stepLabel}>{step.label}</Text>
+              <View style={styles.stepContent}>
+                <Text style={styles.stepTitle}>{step.title}</Text>
+                <Text style={styles.stepDescription}>{step.description}</Text>
+              </View>
             </View>
           ))}
         </View>
 
-        <Text style={styles.note}>
-          Your data is encrypted and only used for identity verification in accordance with
-          our{' '}
-          <Text style={styles.link}>Privacy Policy</Text>.
-        </Text>
-      </View>
+        <View style={styles.infoBox}>
+          <Ionicons name="lock-closed-outline" size={14} color="#9B9BB4" style={{ marginTop: 1 }} />
+          <Text style={styles.infoText}>
+            Your data is encrypted and processed in accordance with our privacy policy.
+            We use it solely for regulatory verification.
+          </Text>
+        </View>
 
-      <View style={styles.footer}>
         <TouchableOpacity
           style={styles.primaryButton}
           onPress={() => router.push('/(onboarding)/kyc-document')}
           activeOpacity={0.85}
         >
-          <Text style={styles.primaryButtonText}>Get started</Text>
+          <Text style={styles.primaryButtonText}>Start verification</Text>
           <Ionicons name="arrow-forward" size={18} color="#fff" />
         </TouchableOpacity>
-      </View>
+
+        <TouchableOpacity
+          style={styles.secondaryButton}
+          onPress={() => router.back()}
+          activeOpacity={0.7}
+        >
+          <Text style={styles.secondaryButtonText}>Do this later</Text>
+        </TouchableOpacity>
+      </ScrollView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1, backgroundColor: '#0A0A0F' },
-  container: { flex: 1, paddingHorizontal: 24, paddingTop: 48, alignItems: 'center' },
+  safe: {
+    flex: 1,
+    backgroundColor: '#0A0A0F',
+  },
+  container: {
+    padding: 24,
+    paddingBottom: 40,
+  },
+  header: {
+    alignItems: 'center',
+    marginTop: 32,
+    marginBottom: 36,
+  },
   iconWrap: {
-    width: 88,
-    height: 88,
-    borderRadius: 24,
+    width: 72,
+    height: 72,
+    borderRadius: 20,
     backgroundColor: 'rgba(124, 111, 255, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 28,
+    marginBottom: 20,
   },
   title: {
     fontSize: 26,
     fontWeight: '700',
     color: '#FFFFFF',
+    marginBottom: 10,
     textAlign: 'center',
-    marginBottom: 12,
-    letterSpacing: -0.4,
+    letterSpacing: -0.3,
   },
   subtitle: {
     fontSize: 15,
     color: '#9B9BB4',
     textAlign: 'center',
     lineHeight: 22,
-    marginBottom: 36,
+    maxWidth: 300,
   },
-  steps: { width: '100%', gap: 12, marginBottom: 36 },
-  step: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  stepsCard: {
     backgroundColor: '#141420',
-    borderRadius: 14,
-    padding: 16,
-    gap: 14,
+    borderRadius: 16,
+    padding: 20,
+    marginBottom: 16,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.06)',
   },
-  stepIcon: {
+  step: {
+    flexDirection: 'row',
+    marginBottom: 4,
+  },
+  stepLeft: {
+    alignItems: 'center',
+    marginRight: 16,
+    width: 36,
+  },
+  stepIconWrap: {
     width: 36,
     height: 36,
     borderRadius: 10,
@@ -100,15 +144,44 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  stepLabel: { fontSize: 15, color: '#FFFFFF', fontWeight: '500' },
-  note: { fontSize: 12, color: '#5C5C7A', textAlign: 'center', lineHeight: 18 },
-  link: { color: '#7C6FFF' },
-  footer: {
-    padding: 24,
-    paddingBottom: 36,
-    backgroundColor: '#0A0A0F',
-    borderTopWidth: 1,
-    borderTopColor: 'rgba(255,255,255,0.06)',
+  stepConnector: {
+    width: 1,
+    flex: 1,
+    backgroundColor: 'rgba(124, 111, 255, 0.2)',
+    marginVertical: 6,
+    minHeight: 20,
+  },
+  stepContent: {
+    flex: 1,
+    paddingBottom: 20,
+    justifyContent: 'center',
+  },
+  stepTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFFFFF',
+    marginBottom: 2,
+  },
+  stepDescription: {
+    fontSize: 13,
+    color: '#9B9BB4',
+    lineHeight: 18,
+  },
+  infoBox: {
+    flexDirection: 'row',
+    gap: 8,
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 28,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+  },
+  infoText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#9B9BB4',
+    lineHeight: 17,
   },
   primaryButton: {
     backgroundColor: '#7C6FFF',
@@ -118,6 +191,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
+    marginBottom: 12,
   },
-  primaryButtonText: { fontSize: 16, fontWeight: '600', color: '#FFFFFF' },
+  primaryButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#FFFFFF',
+  },
+  secondaryButton: {
+    height: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  secondaryButtonText: {
+    fontSize: 15,
+    color: '#9B9BB4',
+  },
 });

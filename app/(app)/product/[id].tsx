@@ -140,10 +140,7 @@ export default function ProductDetailScreen() {
   useEffect(() => {
     const load = async () => {
       try {
-        if (!id || id === 'undefined') {
-          router.back();
-          return;
-        }
+        if (!id) throw new Error('No product ID');
         const data = await productService.getProduct(id);
         if (!data) throw new Error('Product not found');
         setProduct(data);
