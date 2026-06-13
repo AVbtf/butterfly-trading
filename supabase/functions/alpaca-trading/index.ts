@@ -22,6 +22,7 @@
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
+import { calculateDonation } from './donation.ts'
 
 // ─── Environment ──────────────────────────────────────────────────────────────
 
@@ -34,20 +35,6 @@ const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!
 const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
 // ─── Constants ────────────────────────────────────────────────────────────────
-
-/**
- * Butterfly matches 5% of profit on winning trades.
- * Our matching contribution is capped at £50,000 per trade to mitigate
- * liquidity risk. The cap triggers when pnl_gbp × 0.05 > £50,000,
- * i.e. when profit exceeds £1,000,000.
- *
- * Examples:
- *   pnl = £1,000,000 → match = £50,000 (5% exactly hits cap)
- *   pnl = £1,800,000 → match = £50,000 (capped)
- *   pnl = £500       → match = £25.00   (5%, under cap)
- */
-const DONATION_RATE      = 0.05
-const DONATION_CAP_GBP   = 50_000
 
 // ─── Headers ─────────────────────────────────────────────────────────────────
 
@@ -109,76 +96,19 @@ async function alpacaDelete(path: string) {
 
 // ─── Donation logic ───────────────────────────────────────────────────────────
 
-interface DonationInput {
-  pnl_gbp:        number  // Realised P&L on the closing trade (negative = loss)
-  commission_gbp: number  // Broker commission for this order (floor at 0)
-}
-
-interface DonationResult {
-  donation_gbp:  number   // Rounded down to nearest penny
-  is_win:        boolean
-  is_capped:     boolean  // True if the £50k cap was applied
-  raw_amount:    number   // Pre-cap, pre-rounding amount (for audit log)
-  inputs:        DonationInput
-}
-
-/**
- * calculateDonation
- *
- * Win  (pnl > 0): donation = pnl × 5%, capped at £50,000
- * Loss (pnl ≤ 0): donation = commission × 5%  (break-even treated as loss)
- *
- * All results rounded DOWN to the nearest penny (floor), always in
- * favour of the user. Full-precision raw_amount stored for audit trail.
- */
-export function calculateDonation(input: DonationInput): DonationResult {
-  const { pnl_gbp } = input
-  const commission_gbp = Math.max(0, input.commission_gbp) // Edge case 2.3: floor at 0
-
-  const is_win = pnl_gbp > 0
-
-  let raw_amount: number
-  let is_capped = false
-
-  if (is_win) {
-    const uncapped = pnl_gbp * DONATION_RATE
-    if (uncapped > DONATION_CAP_GBP) {
-      raw_amount = DONATION_CAP_GBP
-      is_capped  = true
-    } else {
-      raw_amount = uncapped
-    }
-  } else {
-    // Loss or break-even (edge case 2.1): donate on commission only
-    raw_amount = commission_gbp * DONATION_RATE
-  }
-
-  // Round DOWN to nearest penny — always in favour of the user (edge case 2.4)
-  const donation_gbp = Math.floor(raw_amount * 100) / 100
-
-  return {
-    donation_gbp,
-    is_win,
-    is_capped,
-    raw_amount,
-    inputs: { pnl_gbp, commission_gbp },
-  }
-}
-
 // ─── Webhook handler ──────────────────────────────────────────────────────────
 
 /**
  * handleWebhook
  *
- * Receives Alpaca order status events. On a confirmed 'fill' for a sell order:
+ * Receives Alpaca order status events. On a confirmed 'fill':
  *   1. Deduplicates via processed_events table (edge case 8.4 / idempotency)
- *   2. Looks up the position's avg_cost_gbp from Supabase
- *   3. Calculates realised P&L
- *   4. Calls calculateDonation
- *   5. Writes donation row atomically with order status update
+ *   2. Resolves OUR order row by broker_order_ref (the Alpaca order id)
+ *   3. BUY  → record_buy_fill (create/update position, weighted-avg cost)
+ *      SELL → look up position, calc P&L + donation, record_fill_and_donation
  *
- * Non-fill events (pending, cancelled, rejected) are acknowledged and ignored
- * for donation purposes — no donation row is ever created for them.
+ * Non-fill events (pending, cancelled, rejected, partial_fill) are
+ * acknowledged and ignored — no position or donation change is made.
  */
 async function handleWebhook(req: Request): Promise<Response> {
   const supabase = getSupabase()
@@ -190,7 +120,7 @@ async function handleWebhook(req: Request): Promise<Response> {
     return jsonResponse({ error: 'Invalid JSON payload' }, 400)
   }
 
-  const event      = payload as AlpacaOrderEvent
+  const event      = payload as unknown as AlpacaOrderEvent
   const event_id   = event.event_id ?? event.order?.id  // dedup key
   const order      = event.order
   const event_type = event.event // 'fill' | 'partial_fill' | 'cancelled' | etc.
@@ -213,50 +143,92 @@ async function handleWebhook(req: Request): Promise<Response> {
     await supabase.from('processed_events').insert({ event_id })
   }
 
-  // ── Only fire donation logic on confirmed fills for sell orders ──
-  // Buy fills create/update positions; donations only trigger on close (sell).
-  if (event_type !== 'fill' || order?.side !== 'sell') {
-    return jsonResponse({ ok: true, action: 'no_donation_required' })
+  // ── Only act on confirmed full fills ──
+  // (partial_fill handling is a separate follow-up — see session notes)
+  if (event_type !== 'fill') {
+    return jsonResponse({ ok: true, action: 'ignored_non_fill' })
   }
 
-  // ── Look up position to get avg_cost_gbp ──
+  const alpacaOrderId = order?.id
+  if (!alpacaOrderId) {
+    return jsonResponse({ error: 'Event missing order id' }, 400)
+  }
+
+  // ── Resolve OUR order row by the Alpaca order id (broker_order_ref) ──
+  // This is the authoritative source of account_id + product_id. We never
+  // trust identity fields on the Alpaca payload directly: the paper Trading
+  // API uses a single shared account and its events do not carry our ids.
+  const { data: orderRow, error: orderErr } = await supabase
+    .from('orders')
+    .select('order_id, account_id, product_id, side')
+    .eq('broker_order_ref', alpacaOrderId)
+    .maybeSingle()
+
+  if (orderErr || !orderRow) {
+    console.error('[webhook] no local order for broker ref', alpacaOrderId, orderErr)
+    return jsonResponse({ error: 'No local order found for this fill' }, 422)
+  }
+
+  const fill_price_gbp = parseFloat(order.filled_avg_price ?? '0')
+  const qty            = parseFloat(order.filled_qty ?? '0')
+  const commission_gbp = parseFloat((order.commission ?? '0') as string)
+  const side           = orderRow.side as 'buy' | 'sell'
+
+  // ── BUY fill: create/update the position (weighted-average cost basis) ──
+  if (side === 'buy') {
+    const { error: buyErr } = await supabase.rpc('record_buy_fill', {
+      p_order_id:       orderRow.order_id,
+      p_account_id:     orderRow.account_id,
+      p_product_id:     orderRow.product_id,
+      p_fill_price:     fill_price_gbp,
+      p_qty:            qty,
+      p_commission_gbp: commission_gbp,
+      p_filled_at:      order.filled_at,
+    })
+
+    if (buyErr) {
+      console.error('[webhook] record_buy_fill failed', buyErr)
+      return jsonResponse({ error: 'Failed to record buy fill' }, 500)
+    }
+
+    console.log('[webhook] buy fill recorded', {
+      order_id: orderRow.order_id, qty, fill_price_gbp,
+    })
+    return jsonResponse({ ok: true, action: 'position_updated' })
+  }
+
+  // ── SELL fill: realise P&L, calculate donation, record atomically ──
   const { data: position, error: posErr } = await supabase
     .from('positions')
-    .select('id, avg_cost_gbp, account_id')
-    .eq('symbol', order.symbol)
-    .eq('account_id', order.account_id)
+    .select('position_id, avg_cost_gbp')
+    .eq('account_id', orderRow.account_id)
+    .eq('product_id', orderRow.product_id)
     .maybeSingle()
 
   if (posErr || !position) {
     console.error('[webhook] position lookup failed', posErr)
-    return jsonResponse({ error: 'Position not found for this order' }, 422)
+    return jsonResponse({ error: 'Position not found for this sell' }, 422)
   }
 
-  // ── Calculate realised P&L ──
-  const fill_price_gbp  = parseFloat(order.filled_avg_price ?? '0')
-  const qty             = parseFloat(order.filled_qty ?? '0')
-  const avg_cost_gbp    = position.avg_cost_gbp as number
-  const commission_gbp  = parseFloat((order.commission ?? '0') as string)
-
+  const avg_cost_gbp = position.avg_cost_gbp as number
   const pnl_gbp = (fill_price_gbp - avg_cost_gbp) * qty
 
-  // ── Calculate donation ──
   const result = calculateDonation({ pnl_gbp, commission_gbp })
 
   console.log('[webhook] donation result', {
-    order_id:      order.id,
+    order_id:     orderRow.order_id,
     pnl_gbp,
-    donation_gbp:  result.donation_gbp,
-    is_win:        result.is_win,
-    is_capped:     result.is_capped,
+    donation_gbp: result.donation_gbp,
+    is_win:       result.is_win,
+    is_capped:    result.is_capped,
   })
 
   // ── Write donation row + update order status atomically ──
   // Using supabase rpc for atomicity (edge case 2.10)
   const { error: rpcErr } = await supabase.rpc('record_fill_and_donation', {
-    p_order_id:       order.id,
-    p_account_id:     position.account_id,
-    p_position_id:    position.id,
+    p_order_id:       orderRow.order_id,
+    p_account_id:     orderRow.account_id,
+    p_position_id:    position.position_id,
     p_fill_price_gbp: fill_price_gbp,
     p_qty:            qty,
     p_pnl_gbp:        pnl_gbp,
@@ -312,17 +284,63 @@ async function handleAction(action: string, body: Record<string, unknown>) {
     }
 
     case 'place_order': {
-      const { symbol, qty, side, type, time_in_force } = body
+      const { symbol, qty, side, type, time_in_force, account_id } = body
       if (!symbol || !qty || !side) {
         throw new Error('place_order requires: symbol, qty, side')
       }
-      return await alpacaPost('/v2/orders', {
+      if (!account_id) {
+        // Needed to attribute the eventual fill to the right Butterfly account.
+        throw new Error('place_order requires: account_id')
+      }
+
+      const supabase = getSupabase()
+
+      // Resolve our product_id from the ticker BEFORE touching Alpaca, so an
+      // unknown symbol fails fast without leaving a dangling broker order.
+      const { data: product, error: prodErr } = await supabase
+        .from('products')
+        .select('product_id')
+        .eq('ticker', symbol)
+        .maybeSingle()
+
+      if (prodErr || !product) {
+        throw new Error(`No product found for ticker: ${symbol}`)
+      }
+
+      // Submit to Alpaca.
+      const alpacaOrder = await alpacaPost('/v2/orders', {
         symbol,
         qty,
         side,
         type:          type ?? 'market',
         time_in_force: time_in_force ?? 'day',
       })
+
+      // Persist OUR order row. broker_order_ref links it to the Alpaca order
+      // so the fill webhook can resolve account_id + product_id authoritatively.
+      const { data: orderRow, error: orderErr } = await supabase
+        .from('orders')
+        .insert({
+          account_id,
+          product_id:       product.product_id,
+          side,
+          quantity:         qty,
+          status:           'pending',
+          broker_order_ref: alpacaOrder.id,
+          placed_at:        new Date().toISOString(),
+        })
+        .select('order_id')
+        .single()
+
+      if (orderErr) {
+        // Alpaca already accepted the order; log loudly for reconciliation.
+        console.error('[place_order] placed at broker but local insert failed', {
+          broker_order_ref: alpacaOrder.id, orderErr,
+        })
+        throw new Error('Order placed with broker but failed to persist locally')
+      }
+
+      return { ...alpacaOrder, butterfly_order_id: orderRow.order_id }
     }
 
     case 'cancel_order': {
@@ -390,7 +408,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
-serve(async (req) => {
+serve(async (req: Request) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
