@@ -427,6 +427,63 @@ async function handleAction(action: string, body: Record<string, unknown>) {
       )
     }
 
+    /**
+     * get_portfolio
+     * Server-side (service-role) read of an account's portfolio: cash balance,
+     * open holdings (joined to products for ticker/name), and matched-donation
+     * impact per holding plus the account total. Routed through the function so
+     * the app never depends on RLS or a particular auth session for reads.
+     */
+    case 'get_portfolio': {
+      const { account_id } = body
+      if (!account_id) throw new Error('get_portfolio requires: account_id')
+      const supabase = getSupabase()
+
+      const [{ data: account }, { data: positions }, { data: donations }] = await Promise.all([
+        supabase.from('accounts')
+          .select('cash_balance, currency')
+          .eq('account_id', account_id).maybeSingle(),
+        supabase.from('positions')
+          .select('position_id, product_id, quantity, avg_cost_gbp, current_value_gbp, unrealised_pnl, products(ticker, name)')
+          .eq('account_id', account_id).gt('quantity', 0),
+        supabase.from('donations')
+          .select('donation_amount_gbp, orders(product_id)')
+          .eq('account_id', account_id),
+      ])
+
+      // Aggregate matched-donation impact per product and overall.
+      const impactByProduct: Record<string, number> = {}
+      let total_impact_gbp = 0
+      for (const d of donations ?? []) {
+        const amt = Number((d as Record<string, unknown>).donation_amount_gbp) || 0
+        total_impact_gbp += amt
+        const pid = ((d as Record<string, unknown>).orders as { product_id?: string } | null)?.product_id
+        if (pid) impactByProduct[pid] = (impactByProduct[pid] ?? 0) + amt
+      }
+
+      const holdings = (positions ?? []).map((p) => {
+        const row = p as Record<string, unknown>
+        const product = row.products as { ticker?: string; name?: string } | null
+        return {
+          position_id:       row.position_id,
+          product_id:        row.product_id,
+          ticker:            product?.ticker ?? null,
+          name:              product?.name ?? null,
+          quantity:          Number(row.quantity),
+          avg_cost_gbp:      Number(row.avg_cost_gbp),
+          current_value_gbp: row.current_value_gbp != null ? Number(row.current_value_gbp) : null,
+          impact_gbp:        impactByProduct[row.product_id as string] ?? 0,
+        }
+      })
+
+      return {
+        cash_balance:     Number(account?.cash_balance ?? 0),
+        currency:         account?.currency ?? 'GBP',
+        holdings,
+        total_impact_gbp,
+      }
+    }
+
     default:
       throw new Error(`Unknown action: ${action}`)
   }

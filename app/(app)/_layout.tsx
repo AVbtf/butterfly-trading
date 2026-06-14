@@ -87,6 +87,15 @@ export default function AppLayout() {
           ),
         }}
       />
+      <Tabs.Screen
+        name="portfolio"
+        options={{
+          title: 'Portfolio',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="pie-chart-outline" size={size} color={color} />
+          ),
+        }}
+      />
     </Tabs>
   );
 }
