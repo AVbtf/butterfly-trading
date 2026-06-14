@@ -284,13 +284,21 @@ async function handleAction(action: string, body: Record<string, unknown>) {
     }
 
     case 'place_order': {
-      const { symbol, qty, side, type, time_in_force, account_id } = body
+      const { symbol, qty, side, type, time_in_force, account_id, notional_gbp } = body
       if (!symbol || !qty || !side) {
         throw new Error('place_order requires: symbol, qty, side')
       }
       if (!account_id) {
         // Needed to attribute the eventual fill to the right Butterfly account.
         throw new Error('place_order requires: account_id')
+      }
+      // orders.notional_gbp is NOT NULL. For a market order the true notional
+      // isn't known until fill, so this is the INDICATIVE GBP value the review
+      // screen showed the user (qty × displayed price). It is overwritten with
+      // the actual executed value on fill. The client must supply it.
+      const notional = Number(notional_gbp)
+      if (!Number.isFinite(notional) || notional <= 0) {
+        throw new Error('place_order requires: notional_gbp (positive number)')
       }
 
       const supabase = getSupabase()
@@ -325,6 +333,7 @@ async function handleAction(action: string, body: Record<string, unknown>) {
           product_id:       product.product_id,
           side,
           quantity:         qty,
+          notional_gbp:     notional,
           status:           'pending',
           broker_order_ref: alpacaOrder.id,
           placed_at:        new Date().toISOString(),
