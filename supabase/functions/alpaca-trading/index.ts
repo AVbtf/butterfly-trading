@@ -143,10 +143,16 @@ async function handleWebhook(req: Request): Promise<Response> {
     await supabase.from('processed_events').insert({ event_id })
   }
 
-  // ── Only act on confirmed full fills ──
-  // (partial_fill handling is a separate follow-up — see session notes)
-  if (event_type !== 'fill') {
-    return jsonResponse({ ok: true, action: 'ignored_non_fill' })
+  // ── Act only on TERMINAL events ──
+  // Alpaca's order object carries cumulative filled_qty / filled_avg_price on
+  // every event, so the terminal event alone has the complete fill picture.
+  // We ignore non-terminal events (incl. partial_fill) to avoid double-counting:
+  // a fully-filled order — even one filled in several tranches — produces one
+  // 'fill', and a partial-then-cancel produces 'canceled'/'expired' carrying the
+  // filled quantity. (Alpaca spells the event 'canceled', one l.)
+  const TERMINAL_EVENTS = ['fill', 'canceled', 'cancelled', 'expired']
+  if (!TERMINAL_EVENTS.includes(event_type)) {
+    return jsonResponse({ ok: true, action: 'ignored_non_terminal' })
   }
 
   const alpacaOrderId = order?.id
@@ -174,6 +180,24 @@ async function handleWebhook(req: Request): Promise<Response> {
   const commission_gbp = parseFloat((order.commission ?? '0') as string)
   const side           = orderRow.side as 'buy' | 'sell'
 
+  // ── Nothing filled (pure cancel / expire) → close the order, no side effects ──
+  if (!(qty > 0)) {
+    const empty_status = 'cancelled'  // permitted set: pending/filled/cancelled/failed
+    await supabase.from('orders')
+      .update({ status: empty_status })
+      .eq('order_id', orderRow.order_id)
+      .neq('status', 'filled')   // never override an already-filled order
+    console.log('[webhook] terminal event with no fill', {
+      order_id: orderRow.order_id, event_type, empty_status,
+    })
+    return jsonResponse({ ok: true, action: 'closed_no_fill', status: empty_status })
+  }
+
+  // Any terminal event that filled shares produced a position, so the order is
+  // labelled 'filled' — including a partial-then-cancel (product decision).
+  // orders.status only permits: pending / filled / cancelled / failed.
+  const final_status = 'filled'
+
   // ── BUY fill: create/update the position (weighted-average cost basis) ──
   if (side === 'buy') {
     const { error: buyErr } = await supabase.rpc('record_buy_fill', {
@@ -184,6 +208,7 @@ async function handleWebhook(req: Request): Promise<Response> {
       p_qty:            qty,
       p_commission_gbp: commission_gbp,
       p_filled_at:      order.filled_at,
+      p_final_status:   final_status,
     })
 
     if (buyErr) {
@@ -192,9 +217,9 @@ async function handleWebhook(req: Request): Promise<Response> {
     }
 
     console.log('[webhook] buy fill recorded', {
-      order_id: orderRow.order_id, qty, fill_price_gbp,
+      order_id: orderRow.order_id, qty, fill_price_gbp, final_status,
     })
-    return jsonResponse({ ok: true, action: 'position_updated' })
+    return jsonResponse({ ok: true, action: 'position_updated', filled_qty: qty, status: final_status })
   }
 
   // ── SELL fill: realise P&L, calculate donation, record atomically ──
@@ -238,6 +263,7 @@ async function handleWebhook(req: Request): Promise<Response> {
     p_raw_donation:   result.raw_amount,
     p_commission_gbp: result.inputs.commission_gbp,
     p_filled_at:      order.filled_at,
+    p_final_status:   final_status,
   })
 
   if (rpcErr) {
@@ -245,7 +271,7 @@ async function handleWebhook(req: Request): Promise<Response> {
     return jsonResponse({ error: 'Failed to record fill and donation' }, 500)
   }
 
-  return jsonResponse({ ok: true, donation_gbp: result.donation_gbp })
+  return jsonResponse({ ok: true, donation_gbp: result.donation_gbp, filled_qty: qty, status: final_status })
 }
 
 // ─── Alpaca order event shape (partial) ──────────────────────────────────────
