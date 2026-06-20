@@ -96,6 +96,10 @@ export default function AppLayout() {
           ),
         }}
       />
+
+      {/* Detail/flow routes — present in (app)/ but hidden from the tab bar */}
+      <Tabs.Screen name="product/[id]" options={{ href: null }} />
+      <Tabs.Screen name="buy/[id]" options={{ href: null }} />
     </Tabs>
   );
 }

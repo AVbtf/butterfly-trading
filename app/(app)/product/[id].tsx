@@ -8,7 +8,7 @@
  *   - SDG alignment: each goal with number, name, and description
  *   - Screening gates: visual breakdown of all three gates
  *   - Key stats: AUM, TER/volatility, max drawdown
- *   - Trade CTA: disabled "Coming soon" until Phase 4
+ *   - Trade CTA: Buy button → app/(app)/buy/[id] (Phase 4)
  */
 
 import { useEffect, useState } from 'react';
@@ -288,16 +288,21 @@ export default function ProductDetailScreen() {
         {/* ── Trade CTA ── */}
         <View style={styles.tradeSection}>
           <TouchableOpacity
-            style={styles.tradeButton}
-            disabled
-            activeOpacity={1}
+            style={styles.buyButton}
+            activeOpacity={0.85}
+            onPress={() =>
+              router.push({
+                pathname: '/(app)/buy/[id]',
+                params: { id: product.productId, name: product.name, ticker: product.ticker },
+              })
+            }
           >
-            <Ionicons name="time-outline" size={18} color="rgba(255,255,255,0.4)" />
-            <Text style={styles.tradeButtonText}>Trading coming in Phase 4</Text>
+            <Ionicons name="trending-up" size={18} color="#FFFFFF" />
+            <Text style={styles.buyButtonText}>Buy {product.ticker}</Text>
           </TouchableOpacity>
           <Text style={styles.tradeNote}>
-            Paper trading and live order placement will be available once the execution
-            provider integration is complete.
+            Paper trading via the execution provider. Real LSE tickers may be rejected on
+            the US paper endpoint.
           </Text>
         </View>
       </ScrollView>
@@ -465,21 +470,19 @@ const styles = StyleSheet.create({
 
   // ── Trade CTA ──
   tradeSection: { gap: 12 },
-  tradeButton: {
-    backgroundColor: 'rgba(255,255,255,0.04)',
+  buyButton: {
+    backgroundColor: '#7C6FFF',
     borderRadius: 14,
     height: 54,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.06)',
   },
-  tradeButtonText: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: 'rgba(255,255,255,0.3)',
+  buyButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFFFFF',
   },
   tradeNote: {
     fontSize: 12,
