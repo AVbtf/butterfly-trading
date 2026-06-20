@@ -4,7 +4,8 @@
  * Phase 3 — Product detail screen.
  *
  * Shows full product information:
- *   - Hero: name, ticker, type, ESG index, price placeholder
+ *   - Hero: name, ticker, type, ESG index, latest price
+ *   - Price chart (Phase 4): area/line chart with range selector
  *   - SDG alignment: each goal with number, name, and description
  *   - Screening gates: visual breakdown of all three gates
  *   - Key stats: AUM, TER/volatility, max drawdown
@@ -24,6 +25,8 @@ import {
 import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { productService, Product } from '../../../services/products';
+import { tradingService, PriceRange, PriceBar } from '../../../services/trading';
+import { PriceChart, generateMockBars } from '../../../components/PriceChart';
 
 // ─── SDG data ─────────────────────────────────────────────────────────────────
 
@@ -60,6 +63,11 @@ const formatPercent = (val: number | null): string => {
   if (val === null) return '—';
   return `${(val * 100).toFixed(2)}%`;
 };
+
+const formatGbpPrice = (n: number | null): string =>
+  n == null
+    ? '—'
+    : `£${n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -137,6 +145,11 @@ export default function ProductDetailScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Price chart state
+  const [range, setRange] = useState<PriceRange>('1M');
+  const [bars, setBars] = useState<PriceBar[]>([]);
+  const [chartLoading, setChartLoading] = useState(true);
+
   useEffect(() => {
     const load = async () => {
       try {
@@ -153,6 +166,30 @@ export default function ProductDetailScreen() {
     };
     load();
   }, [id]);
+
+  // Fetch price bars for the chart whenever the product or range changes.
+  useEffect(() => {
+    if (!product?.ticker) return;
+    let active = true;
+    setChartLoading(true);
+    (async () => {
+      let data = await tradingService.getPriceHistory(product.ticker, range);
+      // DEV-only mock fallback while the get_bars action isn't deployed and LSE
+      // tickers can't be priced on the US endpoint. Remove once real bars flow.
+      if (data.length === 0 && __DEV__) {
+        data = generateMockBars(product.ticker, range, { annualVol: product.volatility12m });
+      }
+      if (active) {
+        setBars(data);
+        setChartLoading(false);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [product?.ticker, product?.volatility12m, range]);
+
+  const latestClose = bars.length ? bars[bars.length - 1].c : null;
 
   if (loading) {
     return (
@@ -209,10 +246,21 @@ export default function ProductDetailScreen() {
                 </View>
               </View>
             </View>
-            {/* Price placeholder */}
+            {/* Latest price (from chart bars) */}
             <View style={styles.priceWrap}>
-              <Text style={styles.pricePlaceholder}>—</Text>
-              <Text style={styles.priceLabel}>Live price{'\n'}Phase 4</Text>
+              {chartLoading && bars.length === 0 ? (
+                <ActivityIndicator size="small" color="#7C6FFF" />
+              ) : latestClose != null ? (
+                <>
+                  <Text style={styles.priceValue}>{formatGbpPrice(latestClose)}</Text>
+                  <Text style={styles.priceLabel}>Latest price</Text>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.pricePlaceholder}>—</Text>
+                  <Text style={styles.priceLabel}>Price{'\n'}unavailable</Text>
+                </>
+              )}
             </View>
           </View>
 
@@ -220,6 +268,17 @@ export default function ProductDetailScreen() {
             <Ionicons name="shield-checkmark-outline" size={13} color="#7C6FFF" />
             <Text style={styles.esgIndexText}>{product.esgIndex}</Text>
           </View>
+        </View>
+
+        {/* ── Price chart ── */}
+        <SectionHeader title="Price" />
+        <View style={styles.chartCard}>
+          <PriceChart
+            bars={bars}
+            loading={chartLoading}
+            range={range}
+            onRangeChange={setRange}
+          />
         </View>
 
         {/* ── Key stats ── */}
@@ -358,7 +417,8 @@ const styles = StyleSheet.create({
   typeBadgeText: { fontSize: 11, fontWeight: '700' },
   typeBadgeTextEtf: { color: '#7C6FFF' },
   typeBadgeTextEquity: { color: '#34D399' },
-  priceWrap: { alignItems: 'flex-end' },
+  priceWrap: { alignItems: 'flex-end', minWidth: 70 },
+  priceValue: { fontSize: 22, fontWeight: '700', color: '#FFFFFF' },
   pricePlaceholder: { fontSize: 22, fontWeight: '700', color: 'rgba(255,255,255,0.2)' },
   priceLabel: { fontSize: 10, color: '#3D3D56', textAlign: 'right', marginTop: 2, lineHeight: 14 },
   esgIndexRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
@@ -372,6 +432,16 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.8,
     marginBottom: 12,
+  },
+
+  // ── Price chart ──
+  chartCard: {
+    backgroundColor: '#141420',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.06)',
+    padding: 18,
+    marginBottom: 28,
   },
 
   // ── Stats grid ──

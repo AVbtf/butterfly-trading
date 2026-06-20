@@ -12,6 +12,7 @@
  *   get_portfolio    — cash, holdings, matched-donation impact
  *   place_order      — submit a buy/sell (requires account_id + notional_gbp)
  *   get_latest_bar   — latest price for a symbol (for cost estimates)
+ *   get_bars         — historical price bars for a symbol (for the price chart)
  *
  * NOTE on account_id: the app's account layer is still mock, so there is no
  * real account_id flowing from the UI yet. getActiveAccountId() derives it from
@@ -63,11 +64,32 @@ export interface PlaceOrderResult {
   status: string;
 }
 
+/** Supported chart ranges (UI). */
+export type PriceRange = '1W' | '1M' | '3M' | '1Y';
+
+/** A single OHLC price bar. Timestamp is ISO 8601. */
+export interface PriceBar {
+  t: string;
+  o: number;
+  h: number;
+  l: number;
+  c: number;
+}
+
 // ─── Dev fallback ───────────────────────────────────────────────────────────
 // The seeded test account from backend testing. Used only when there is no
 // authenticated session yet (mock account layer). DELETE once auth+accounts
 // are real.
 const DEV_ACCOUNT_ID = 'bd2cfffe-20b3-4e93-91ff-42b44715360a';
+
+// Maps a UI range to an Alpaca bar timeframe + how many bars to request.
+// Tune these alongside the get_bars action once it's deployed.
+const RANGE_CONFIG: Record<PriceRange, { timeframe: string; limit: number }> = {
+  '1W': { timeframe: '1Hour', limit: 56 },
+  '1M': { timeframe: '1Day', limit: 30 },
+  '3M': { timeframe: '1Day', limit: 90 },
+  '1Y': { timeframe: '1Week', limit: 52 },
+};
 
 // ─── Edge-function helper ─────────────────────────────────────────────────────
 
@@ -203,6 +225,31 @@ export const tradingService = {
       return typeof close === 'number' ? close : null;
     } catch {
       return null;
+    }
+  },
+
+  /**
+   * Historical price bars for a symbol over a UI range, used to draw the product
+   * price chart. Calls the `get_bars` edge action (Alpaca historical bars).
+   *
+   * Returns [] when the market-data endpoint can't serve the symbol (e.g. LSE
+   * tickers on the US paper endpoint) so callers can fall back to an empty/mock
+   * state.
+   *
+   * NOTE: requires a `get_bars` action to be added to the alpaca-trading edge
+   * function and deployed. Until then this resolves to [].
+   */
+  async getPriceHistory(symbol: string, range: PriceRange): Promise<PriceBar[]> {
+    const { timeframe, limit } = RANGE_CONFIG[range];
+    try {
+      const res = await invokeAction<{ bars?: PriceBar[] }>('get_bars', {
+        symbol,
+        timeframe,
+        limit,
+      });
+      return res?.bars ?? [];
+    } catch {
+      return [];
     }
   },
 };
