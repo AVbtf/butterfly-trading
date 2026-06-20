@@ -1,5 +1,5 @@
 /**
- * app/(tabs)/portfolio.tsx
+ * app/(app)/portfolio.tsx
  *
  * Portfolio / holdings screen — the main investing surface.
  *
@@ -13,7 +13,7 @@
  * endpoint), the row falls back to cost basis and omits P&L rather than
  * showing a wrong number.
  *
- * Place this file under your main app route group (e.g. app/(tabs)/).
+ * Tapping a holding opens the Sell flow (app/(app)/sell/[id]).
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -163,7 +163,7 @@ export default function PortfolioScreen() {
             <Text style={styles.emptyText}>
               Invest in a fund and Butterfly matches 5% of your profit as a charitable donation.
             </Text>
-            <TouchableOpacity style={styles.emptyCta} onPress={() => router.push('/(tabs)/discover')}>
+            <TouchableOpacity style={styles.emptyCta} onPress={() => router.push('/(app)/products')}>
               <Text style={styles.emptyCtaText}>Explore funds</Text>
               <Ionicons name="arrow-forward" size={16} color="#fff" />
             </TouchableOpacity>
@@ -178,7 +178,18 @@ export default function PortfolioScreen() {
                   key={h.positionId}
                   style={styles.holdingCard}
                   activeOpacity={0.85}
-                  onPress={() => router.push({ pathname: '/(tabs)/position/[id]', params: { id: h.positionId } })}
+                  onPress={() =>
+                    router.push({
+                      pathname: '/(app)/sell/[id]',
+                      params: {
+                        id: h.positionId,
+                        name: h.name ?? h.ticker ?? '',
+                        ticker: h.ticker ?? '',
+                        posQty: String(h.quantity),
+                        avgCost: String(h.avgCostGbp),
+                      },
+                    })
+                  }
                 >
                   <View style={styles.holdingHeader}>
                     <View style={styles.tickerBadge}>
