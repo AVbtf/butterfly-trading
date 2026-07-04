@@ -5,7 +5,7 @@
  *
  * Shows full product information:
  *   - Hero: name, ticker, type, ESG index, latest price
- *   - Price chart (Phase 4): area/line chart with range selector
+ *   - Price chart (Phase 4): area/line chart with range selector (live via get_bars)
  *   - SDG alignment: each goal with number, name, and description
  *   - Screening gates: visual breakdown of all three gates
  *   - Key stats: AUM, TER/volatility, max drawdown
@@ -26,7 +26,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { productService, Product } from '../../../services/products';
 import { tradingService, PriceRange, PriceBar } from '../../../services/trading';
-import { PriceChart, generateMockBars } from '../../../components/PriceChart';
+import { PriceChart } from '../../../components/PriceChart';
 
 // ─── SDG data ─────────────────────────────────────────────────────────────────
 
@@ -168,17 +168,15 @@ export default function ProductDetailScreen() {
   }, [id]);
 
   // Fetch price bars for the chart whenever the product or range changes.
+  // Bars arrive from get_bars already normalised to GBP; when the feed can't
+  // serve a ticker (e.g. LSE symbols on the US endpoint) this returns [] and
+  // the chart shows its honest empty state — no mock ever ships.
   useEffect(() => {
     if (!product?.ticker) return;
     let active = true;
     setChartLoading(true);
     (async () => {
-      let data = await tradingService.getPriceHistory(product.ticker, range);
-      // DEV-only mock fallback while the get_bars action isn't deployed and LSE
-      // tickers can't be priced on the US endpoint. Remove once real bars flow.
-      if (data.length === 0 && __DEV__) {
-        data = generateMockBars(product.ticker, range, { annualVol: product.volatility12m });
-      }
+      const data = await tradingService.getPriceHistory(product.ticker, range);
       if (active) {
         setBars(data);
         setChartLoading(false);
@@ -187,7 +185,7 @@ export default function ProductDetailScreen() {
     return () => {
       active = false;
     };
-  }, [product?.ticker, product?.volatility12m, range]);
+  }, [product?.ticker, range]);
 
   const latestClose = bars.length ? bars[bars.length - 1].c : null;
 

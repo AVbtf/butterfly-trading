@@ -6,13 +6,18 @@
  * All Alpaca API calls are routed through this function so that API keys
  * never touch the client bundle.
  *
+ * CURRENCY: the MVP demo universe is US-listed ETFs. All prices from the
+ * Alpaca US data host (and fill prices on the webhook) are USD; they are
+ * converted to GBP here, at the edge, so the app only ever sees pounds.
+ * Rate comes from the USD_PER_GBP secret. TODO(fx): live FX feed later.
+ *
  * Supported actions (passed as JSON body):
  *   { action: 'get_account' }
  *   { action: 'get_positions' }
  *   { action: 'get_orders', status?: 'open' | 'closed' | 'all' }
  *   { action: 'place_order', symbol, qty, side, type, time_in_force }
  *   { action: 'cancel_order', order_id }
- *   { action: 'get_bars', symbol, timeframe, start, end }
+ *   { action: 'get_bars', symbol, timeframe, limit }   // start/end optional overrides
  *   { action: 'get_latest_quote', symbol }
  *   { action: 'get_latest_bar', symbol }
  *
@@ -35,6 +40,22 @@ const SUPABASE_URL      = Deno.env.get('SUPABASE_URL')!
 const SUPABASE_SERVICE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!
 
 // ─── Constants ────────────────────────────────────────────────────────────────
+
+/**
+ * USD per 1 GBP (e.g. 1.27). All Alpaca US market data and fill prices are
+ * USD; every price leaving this function is converted to GBP with this rate.
+ * TODO(fx): replace the static rate with a live FX source before real money.
+ */
+const USD_PER_GBP = Number(Deno.env.get('USD_PER_GBP'))
+if (!Number.isFinite(USD_PER_GBP) || USD_PER_GBP <= 0) {
+  // Fail loudly at cold start rather than silently mispricing everything.
+  throw new Error('USD_PER_GBP env var missing or invalid — set it with: supabase secrets set USD_PER_GBP=1.27')
+}
+
+/** USD → GBP, rounded to 4 dp to strip float noise (display rounds further). */
+function usdToGbp(usd: number): number {
+  return Math.round((usd / USD_PER_GBP) * 10_000) / 10_000
+}
 
 // ─── Headers ─────────────────────────────────────────────────────────────────
 
@@ -92,6 +113,33 @@ async function alpacaDelete(path: string) {
     throw new Error(`Alpaca DELETE ${path} failed (${res.status}): ${error}`)
   }
   return { success: true }
+}
+
+/**
+ * lookbackStart
+ *
+ * ISO timestamp far enough back to contain `limit` bars of `timeframe`,
+ * padding generously (×2, +7 days) for weekends, holidays and half-days.
+ * Overshooting is harmless: with sort=desc + limit, Alpaca still returns
+ * exactly the most recent `limit` bars inside the window. (Without an explicit
+ * start, Alpaca defaults to the beginning of the CURRENT day — which is why
+ * the old get_bars returned nothing for 1M/3M/1Y.)
+ */
+function lookbackStart(timeframe: string, limit: number): string {
+  const m = timeframe.match(/^(\d+)(Min|Hour|Day|Week|Month)$/)
+  const amount = m ? parseInt(m[1], 10) : 1
+  const unit   = m ? m[2] : 'Day'
+
+  // Approximate CALENDAR days consumed per bar.
+  const daysPerBar =
+    unit === 'Min'   ? amount / 390     // ~390 trading minutes / day
+  : unit === 'Hour'  ? amount / 6.5     // ~6.5 trading hours / day
+  : unit === 'Day'   ? amount * (7 / 5) // 5 trading days / week
+  : unit === 'Week'  ? amount * 7
+  : /* Month */        amount * 31
+
+  const calendarDays = Math.ceil(daysPerBar * limit * 2) + 7
+  return new Date(Date.now() - calendarDays * 86_400_000).toISOString()
 }
 
 // ─── Donation logic ───────────────────────────────────────────────────────────
@@ -175,9 +223,12 @@ async function handleWebhook(req: Request): Promise<Response> {
     return jsonResponse({ error: 'No local order found for this fill' }, 422)
   }
 
-  const fill_price_gbp = parseFloat(order.filled_avg_price ?? '0')
+  // Alpaca reports fills in USD; convert before ANY position/P&L/donation math.
+  // (qty is a share count — no conversion. avg_cost_gbp is stored in GBP, so
+  //  pnl_gbp and calculateDonation operate entirely in pounds.)
+  const fill_price_gbp = usdToGbp(parseFloat(order.filled_avg_price ?? '0'))
   const qty            = parseFloat(order.filled_qty ?? '0')
-  const commission_gbp = parseFloat((order.commission ?? '0') as string)
+  const commission_gbp = usdToGbp(parseFloat((order.commission ?? '0') as string))
   const side           = orderRow.side as 'buy' | 'sell'
 
   // ── Nothing filled (pure cancel / expire) → close the order, no side effects ──
@@ -384,47 +435,91 @@ async function handleAction(action: string, body: Record<string, unknown>) {
       return await alpacaDelete(`/v2/orders/${order_id}`)
     }
 
+    /**
+     * get_bars
+     * Historical OHLC bars for the product price chart, converted USD → GBP.
+     * Contract (services/trading.ts → getPriceHistory):
+     *   request:  { symbol, timeframe, limit }   start/end optional overrides
+     *   response: { symbol, currency, bars: [{ t, o, h, l, c }] } — oldest first
+     */
     case 'get_bars': {
-      const { symbol, timeframe, start, end } = body
+      const { symbol, timeframe, start, end, limit } = body
       if (!symbol) throw new Error('get_bars requires: symbol')
+
+      const tf = (timeframe as string) ?? '1Day'
+      // Clamp to something sane; RANGE_CONFIG tops out at 90.
+      const requested = Math.min(Math.max(Number(limit) || 100, 1), 1000)
+
       const params = new URLSearchParams({
-        timeframe: (timeframe as string) ?? '1Day',
-        ...(start ? { start: start as string } : {}),
-        ...(end   ? { end:   end   as string } : {}),
-        limit: '100',
+        timeframe: tf,
+        limit:     String(requested),
+        sort:      'desc', // most recent N bars within the window
+        start:     (start as string) ?? lookbackStart(tf, requested),
+        ...(end ? { end: end as string } : {}),
+        // If Alpaca ever 403s with "subscription does not permit querying
+        // recent SIP data", add:  feed: 'iex'
       })
-      return await alpacaGet(
+
+      const raw = await alpacaGet(
         `/v2/stocks/${symbol}/bars?${params.toString()}`,
         ALPACA_DATA_URL
       )
+
+      // Alpaca returns `bars: null` (not []) for symbols with no data.
+      const bars: Array<Record<string, number | string>> =
+        Array.isArray(raw?.bars) ? raw.bars : []
+      bars.reverse() // desc → asc (oldest first, ready for charting)
+
+      return {
+        symbol,
+        currency: 'GBP',
+        bars: bars.map((b) => ({
+          t: b.t,
+          o: usdToGbp(b.o as number),
+          h: usdToGbp(b.h as number),
+          l: usdToGbp(b.l as number),
+          c: usdToGbp(b.c as number),
+        })),
+      }
     }
 
     /**
      * get_latest_quote
-     * Returns the latest NBBO quote (bid/ask + sizes) for a symbol.
-     * Use for real-time price display on product detail screens.
+     * Latest NBBO quote for a symbol, bid/ask converted USD → GBP.
      */
     case 'get_latest_quote': {
       const { symbol } = body
       if (!symbol) throw new Error('get_latest_quote requires: symbol')
-      return await alpacaGet(
+      const raw = await alpacaGet(
         `/v2/stocks/${symbol}/quotes/latest`,
         ALPACA_DATA_URL
       )
+      if (raw?.quote) {
+        if (typeof raw.quote.ap === 'number') raw.quote.ap = usdToGbp(raw.quote.ap)
+        if (typeof raw.quote.bp === 'number') raw.quote.bp = usdToGbp(raw.quote.bp)
+      }
+      return { ...raw, currency: 'GBP' }
     }
 
     /**
      * get_latest_bar
-     * Returns the latest OHLCV bar for a symbol.
-     * Use for current price + intraday change calculations.
+     * Latest OHLCV bar for a symbol, prices converted USD → GBP.
+     * Feeds getLatestPrice() → buy cost estimate, sell proceeds, chart header,
+     * and notional_gbp on order placement — must agree with get_bars.
      */
     case 'get_latest_bar': {
       const { symbol } = body
       if (!symbol) throw new Error('get_latest_bar requires: symbol')
-      return await alpacaGet(
+      const raw = await alpacaGet(
         `/v2/stocks/${symbol}/bars/latest`,
         ALPACA_DATA_URL
       )
+      if (raw?.bar) {
+        for (const k of ['o', 'h', 'l', 'c'] as const) {
+          if (typeof raw.bar[k] === 'number') raw.bar[k] = usdToGbp(raw.bar[k])
+        }
+      }
+      return { ...raw, currency: 'GBP' }
     }
 
     /**

@@ -1,15 +1,13 @@
-/**
+ /**
  * components/PriceChart.tsx
  *
- * Phase 4 — product price chart (mock-first).
+ * Phase 4 — product price chart.
  *
  * Presentational area+line chart drawn with react-native-svg, styled to the
  * Phase 3 tokens. Controlled: the parent owns `range` + `bars` and refetches
  * on range change. Renders loading / empty / unavailable states.
  *
- * `generateMockBars` produces a deterministic per-ticker random walk so the
- * chart can be designed before the `get_bars` feed is live. It is DEV-only
- * scaffolding — remove the mock fallback in the parent once real bars flow.
+ * Bars arrive live from the `get_bars` edge action, already normalised to GBP.
  *
  * Install dependency:  npx expo install react-native-svg
  */
@@ -28,8 +26,9 @@ const UP = '#34D399';
 const DOWN = '#FF6B6B';
 const ACCENT = '#7C6FFF';
 
-// TODO(currency): if the feed returns GBX/pence, convert to £ upstream (÷100)
-// before bars reach this component — see the parked currency-universe decision.
+// Currency: bars arrive already normalised to GBP by the edge function
+// (USD→£ via USD_PER_GBP inside get_bars / get_latest_bar). This component
+// only ever sees pounds. TODO(fx): static rate → live feed post-investment.
 const formatGbp = (n: number): string =>
   `£${n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -146,55 +145,6 @@ export function PriceChart({
       </View>
     </View>
   );
-}
-
-// ─── Mock data (DEV scaffolding — remove once get_bars is live) ───────────────
-
-const MOCK_COUNTS: Record<PriceRange, number> = { '1W': 7, '1M': 22, '3M': 66, '1Y': 52 };
-
-function hashString(s: string): number {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-}
-
-/**
- * Deterministic per-ticker random walk so each product's mock chart is stable
- * across renders and ranges. Volatility is seeded off the product's own
- * volatility_12m where available, so quieter funds look quieter.
- */
-export function generateMockBars(
-  seedKey: string,
-  range: PriceRange,
-  opts?: { annualVol?: number | null },
-): PriceBar[] {
-  const n = MOCK_COUNTS[range];
-  let seed = hashString(`${seedKey}:${range}`);
-  const rand = () => {
-    seed = (seed * 1664525 + 1013904223) >>> 0;
-    return seed / 0xffffffff;
-  };
-
-  const annualVol = opts?.annualVol && opts.annualVol > 0 ? opts.annualVol : 0.2;
-  const dailyVol = annualVol / Math.sqrt(252);
-  let price = 20 + (hashString(seedKey) % 280); // stable base per ticker, ~£20–£300
-
-  const bars: PriceBar[] = [];
-  const now = Date.now();
-  const dayMs = 86_400_000;
-  for (let i = n - 1; i >= 0; i--) {
-    const shock = (rand() + rand() + rand() - 1.5) * 2 * dailyVol; // ≈ N(0, dailyVol)
-    const o = price;
-    price = Math.max(0.5, price * (1 + shock));
-    const c = price;
-    const h = Math.max(o, c) * (1 + rand() * dailyVol);
-    const l = Math.min(o, c) * (1 - rand() * dailyVol);
-    bars.push({ t: new Date(now - i * dayMs).toISOString(), o, h, l, c });
-  }
-  return bars;
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
