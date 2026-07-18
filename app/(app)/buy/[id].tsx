@@ -117,6 +117,25 @@ export default function BuyScreen() {
   const [priceLoading, setPriceLoading] = useState<boolean>(true);
   const [mode, setMode] = useState<Mode>('edit');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [cashBalance, setCashBalance] = useState<number | null>(null);
+
+  // Fetch available cash for the pre-trade gate (server enforces it too —
+  // this just surfaces the problem before the broker call).
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const accountId = await tradingService.getActiveAccountId();
+        const p = await tradingService.getPortfolio(accountId);
+        if (active) setCashBalance(p.cashBalance);
+      } catch (err) {
+        console.warn('[BuyScreen] cash balance load failed', err);
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Re-fetch product only if we arrived without display params (e.g. deep link).
   useEffect(() => {
@@ -163,7 +182,11 @@ export default function BuyScreen() {
 
   const estCost = unitPrice != null ? qty * unitPrice : null; // notional, ex-commission
   const total = estCost != null ? estCost + COMMISSION_GBP : null;
-  const canPlace = estCost != null; // placeOrder requires notionalGbp — gate on a real price
+  // True only when we have BOTH a live total and a known balance that can't cover it —
+  // unknown balance never blocks (the server gate is authoritative).
+  const insufficientCash =
+    total != null && cashBalance != null && total > cashBalance;
+  const canPlace = estCost != null && !insufficientCash;
 
   const inc = () => setQty((q) => q + 1); // TODO: position-size cap (Section 4) goes here once resolved
   const dec = () => setQty((q) => Math.max(1, q - 1));
@@ -368,7 +391,19 @@ export default function BuyScreen() {
 
             <MatchNote />
 
-            {!canPlace && (
+            {insufficientCash && (
+              <TouchableOpacity
+                activeOpacity={0.7}
+                onPress={() => router.push('/(app)/cash')}
+              >
+                <Text style={styles.noticeText}>
+                  Not enough cash: this order needs {formatGbp(total)} and you have{' '}
+                  {formatGbp(cashBalance)} available. Tap to add cash.
+                </Text>
+              </TouchableOpacity>
+            )}
+
+            {estCost == null && (
               <Text style={styles.noticeText}>
                 A live price isn't available for {ticker} on the current endpoint, so the
                 order can't be placed here. Positions for this ticker stay testable via the

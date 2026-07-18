@@ -252,4 +252,21 @@ export const tradingService = {
       return [];
     }
   },
+
+  /**
+   * Deposit (positive) or withdraw (negative) demo cash.
+   * Calls the adjust_cash edge action → atomic RPC (balance + audit row).
+   * Server enforces £1–£100,000 per movement and sufficient funds.
+   */
+  async adjustCash(
+    accountId: string,
+    amountGbp: number,
+    note?: string,
+  ): Promise<{ newBalance: number; transactionId: string }> {
+    const data = await invokeAction<{ new_balance: number; transaction_id: string }>(
+      'adjust_cash',
+      { account_id: accountId, amount_gbp: amountGbp, note: note ?? null },
+    );
+    return { newBalance: data.new_balance, transactionId: data.transaction_id };
+  },
 };

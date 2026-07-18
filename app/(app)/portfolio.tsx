@@ -146,6 +146,16 @@ export default function PortfolioScreen() {
           <Text style={styles.summaryLabel}>Available cash</Text>
           <Text style={styles.summaryValue}>{gbp(portfolio?.cashBalance ?? 0)}</Text>
 
+          <TouchableOpacity
+            style={styles.manageCashBtn}
+            activeOpacity={0.7}
+            onPress={() => router.push('/(app)/cash')}
+          >
+            <Ionicons name="swap-vertical" size={14} color="#7C6FFF" />
+            <Text style={styles.manageCashText}>Add or withdraw cash</Text>
+            <Ionicons name="chevron-forward" size={14} color="#7C6FFF" />
+          </TouchableOpacity>
+
           <View style={styles.impactRow}>
             <View style={styles.impactDot} />
             <Text style={styles.impactLabel}>Impact raised</Text>
@@ -246,6 +256,18 @@ const styles = StyleSheet.create({
   },
   summaryLabel: { fontSize: 13, color: '#9B9BB4', marginBottom: 6 },
   summaryValue: { fontSize: 34, fontWeight: '700', color: '#FFFFFF', letterSpacing: -0.5 },
+  manageCashBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 14,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: 'rgba(124,111,255,0.10)',
+    alignSelf: 'flex-start',
+  },
+  manageCashText: { fontSize: 13, fontWeight: '600', color: '#7C6FFF' },
   impactRow: {
     flexDirection: 'row',
     alignItems: 'center',

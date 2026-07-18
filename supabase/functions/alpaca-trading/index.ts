@@ -11,6 +11,10 @@
  * converted to GBP here, at the edge, so the app only ever sees pounds.
  * Rate comes from the USD_PER_GBP secret. TODO(fx): live FX feed later.
  *
+ * COMMISSION: Butterfly's flat £5 per-order fee is applied HERE (see
+ * COMMISSION_GBP) — never read from the broker. Alpaca paper trading is
+ * commission-free, so order.commission is always 0.
+ *
  * Supported actions (passed as JSON body):
  *   { action: 'get_account' }
  *   { action: 'get_positions' }
@@ -20,6 +24,8 @@
  *   { action: 'get_bars', symbol, timeframe, limit }   // start/end optional overrides
  *   { action: 'get_latest_quote', symbol }
  *   { action: 'get_latest_bar', symbol }
+ *   { action: 'adjust_cash', account_id, amount_gbp, note? }
+ *   { action: 'get_portfolio', account_id }
  *
  * Webhook path (POST /alpaca-trading/webhook):
  *   Receives Alpaca order events, fires donation logic on fill.
@@ -56,6 +62,16 @@ if (!Number.isFinite(USD_PER_GBP) || USD_PER_GBP <= 0) {
 function usdToGbp(usd: number): number {
   return Math.round((usd / USD_PER_GBP) * 10_000) / 10_000
 }
+
+/**
+ * Butterfly's flat per-order commission, in GBP. Applied by US — never read
+ * from the broker: Alpaca paper trading is commission-free, so order.commission
+ * is always 0 and must not be the source. Feeds the loss-side donation basis
+ * (5% of commission on a losing sell) and both cash settlements.
+ * NOTE: also hardcoded as COMMISSION_GBP=5 in buy/[id].tsx and sell/[id].tsx —
+ * same two-sources-of-truth debt as DONATION_RATE. Lift to config eventually.
+ */
+const COMMISSION_GBP = 5
 
 // ─── Headers ─────────────────────────────────────────────────────────────────
 
@@ -228,7 +244,10 @@ async function handleWebhook(req: Request): Promise<Response> {
   //  pnl_gbp and calculateDonation operate entirely in pounds.)
   const fill_price_gbp = usdToGbp(parseFloat(order.filled_avg_price ?? '0'))
   const qty            = parseFloat(order.filled_qty ?? '0')
-  const commission_gbp = usdToGbp(parseFloat((order.commission ?? '0') as string))
+  // Butterfly's flat fee, already GBP — NOT Alpaca's order.commission (always
+  // 0 on commission-free paper trading, which silently zeroed the loss-side
+  // donation basis until this fix).
+  const commission_gbp = COMMISSION_GBP
   const side           = orderRow.side as 'buy' | 'sell'
 
   // ── Nothing filled (pure cancel / expire) → close the order, no side effects ──
@@ -392,6 +411,31 @@ async function handleAction(action: string, body: Record<string, unknown>) {
         throw new Error(`No product found for ticker: ${symbol}`)
       }
 
+      // ── Pre-trade cash gate (buys only) ──
+      // Reject before touching Alpaca so an unaffordable order never creates a
+      // dangling broker order. Sells need no gate: quantity is bounded by the
+      // held position, checked in record_fill_and_donation.
+      if (side === 'buy') {
+        const { data: acct, error: acctErr } = await supabase
+          .from('accounts')
+          .select('cash_balance')
+          .eq('account_id', account_id)
+          .maybeSingle()
+
+        if (acctErr || !acct) {
+          throw new Error('Could not verify account balance')
+        }
+
+        const required = notional + COMMISSION_GBP
+        const available = Number(acct.cash_balance ?? 0)
+        if (available < required) {
+          throw new Error(
+            `Insufficient cash: available £${available.toFixed(2)}, ` +
+            `required £${required.toFixed(2)} (including £${COMMISSION_GBP} commission)`
+          )
+        }
+      }
+
       // Submit to Alpaca.
       const alpacaOrder = await alpacaPost('/v2/orders', {
         symbol,
@@ -503,7 +547,8 @@ async function handleAction(action: string, body: Record<string, unknown>) {
 
     /**
      * get_latest_bar
-     * Latest OHLCV bar for a symbol, prices converted USD → GBP.
+     * Latest OHLCV bar for a symbol, prices converted USD → GBP (incl. vw, the
+     * volume-weighted average price — also a dollar figure from Alpaca).
      * Feeds getLatestPrice() → buy cost estimate, sell proceeds, chart header,
      * and notional_gbp on order placement — must agree with get_bars.
      */
@@ -515,11 +560,55 @@ async function handleAction(action: string, body: Record<string, unknown>) {
         ALPACA_DATA_URL
       )
       if (raw?.bar) {
-        for (const k of ['o', 'h', 'l', 'c'] as const) {
+        for (const k of ['o', 'h', 'l', 'c', 'vw'] as const) {
           if (typeof raw.bar[k] === 'number') raw.bar[k] = usdToGbp(raw.bar[k])
         }
       }
       return { ...raw, currency: 'GBP' }
+    }
+
+    /**
+     * adjust_cash
+     * Deposit (positive) or withdraw (negative) demo cash for an account.
+     * Atomic via the adjust_cash RPC: balance update + audit row together.
+     * No payment gateway — Phase 4 demo cash only.
+     * Demo policy limits enforced here (easy to change without a migration):
+     * £1 minimum, £100,000 maximum per movement. The RPC independently
+     * enforces non-zero amounts and sufficient funds (with a row lock), so
+     * concurrent withdrawals can't overdraw.
+     */
+    case 'adjust_cash': {
+      const { account_id, amount_gbp, note } = body
+      if (!account_id) throw new Error('adjust_cash requires: account_id')
+
+      const amount = Number(amount_gbp)
+      if (!Number.isFinite(amount) || amount === 0) {
+        throw new Error('adjust_cash requires: amount_gbp (non-zero number)')
+      }
+
+      // Demo policy: £1 min, £100,000 max per movement.
+      const magnitude = Math.abs(amount)
+      if (magnitude < 1 || magnitude > 100_000) {
+        throw new Error('Amount must be between £1 and £100,000')
+      }
+
+      const supabase = getSupabase()
+      const { data, error } = await supabase.rpc('adjust_cash', {
+        p_account_id: account_id,
+        p_amount_gbp: Math.round(amount * 100) / 100,
+        p_note:       (note as string) ?? null,
+      })
+
+      if (error) {
+        // Surface the RPC's message (e.g. "Insufficient funds: available 12.50")
+        throw new Error(error.message)
+      }
+
+      const row = Array.isArray(data) ? data[0] : data
+      return {
+        new_balance:    row?.new_balance,
+        transaction_id: row?.transaction_id,
+      }
     }
 
     /**
