@@ -29,6 +29,12 @@
  *
  * Webhook path (POST /alpaca-trading/webhook):
  *   Receives Alpaca order events, fires donation logic on fill.
+ *
+ * Poll path (POST /alpaca-trading/poll):
+ *   pg_cron-driven sweep of pending orders — checks Alpaca REST for any that
+ *   filled since the last poll and runs them through the same fill pipeline.
+ *   Exists because Alpaca streams order events over websocket and does not
+ *   POST /webhook out of the box, so fills otherwise never land.
  */
 
 import { serve } from 'https://deno.land/std@0.177.0/http/server.ts'
@@ -160,31 +166,49 @@ function lookbackStart(timeframe: string, limit: number): string {
 
 // ─── Donation logic ───────────────────────────────────────────────────────────
 
-// ─── Webhook handler ──────────────────────────────────────────────────────────
+// ─── Webhook / fill handling ──────────────────────────────────────────────────
 
 /**
  * handleWebhook
  *
- * Receives Alpaca order status events. On a confirmed 'fill':
- *   1. Deduplicates via processed_events table (edge case 8.4 / idempotency)
- *   2. Resolves OUR order row by broker_order_ref (the Alpaca order id)
- *   3. BUY  → record_buy_fill (create/update position, weighted-avg cost)
- *      SELL → look up position, calc P&L + donation, record_fill_and_donation
- *
- * Non-fill events (pending, cancelled, rejected, partial_fill) are
- * acknowledged and ignored — no position or donation change is made.
+ * Thin HTTP wrapper for /webhook. Parses the JSON payload, hands the event to
+ * processFillEvent, and serialises the result. Kept skeletal so that both the
+ * inbound webhook AND the pending-fill poller drive the same fill pipeline.
  */
 async function handleWebhook(req: Request): Promise<Response> {
-  const supabase = getSupabase()
-
   let payload: Record<string, unknown>
   try {
     payload = await req.json()
   } catch {
     return jsonResponse({ error: 'Invalid JSON payload' }, 400)
   }
+  const result = await processFillEvent(payload as unknown as AlpacaOrderEvent)
+  return jsonResponse(result, result.status ?? (result.ok ? 200 : 400))
+}
 
-  const event      = payload as unknown as AlpacaOrderEvent
+/**
+ * processFillEvent
+ *
+ * The core fill pipeline, shared by handleWebhook AND pollPendingFills:
+ *   1. Deduplicates via processed_events table (edge case 8.4 / idempotency)
+ *   2. Resolves OUR order row by broker_order_ref (the Alpaca order id)
+ *   3. BUY  → record_buy_fill (create/update position, weighted-avg cost)
+ *      SELL → look up position, calc P&L + donation, record_fill_and_donation
+ *
+ * Non-terminal events (pending, accepted, partial_fill) are acknowledged and
+ * ignored — no position or donation change is made.
+ *
+ * The processed_events dedup guard is what lets the webhook and the poller
+ * coexist safely: if the same fill fires both paths, the second is a no-op.
+ */
+async function processFillEvent(event: AlpacaOrderEvent): Promise<{
+  ok: boolean
+  action?: string
+  error?: string
+  status?: number
+}> {
+  const supabase = getSupabase()
+
   const event_id   = event.event_id ?? event.order?.id  // dedup key
   const order      = event.order
   const event_type = event.event // 'fill' | 'partial_fill' | 'cancelled' | etc.
@@ -201,7 +225,7 @@ async function handleWebhook(req: Request): Promise<Response> {
 
     if (existing) {
       console.log(`[webhook] duplicate event ${event_id}, skipping`)
-      return jsonResponse({ ok: true, skipped: true })
+      return { ok: true, action: 'duplicate' }
     }
 
     await supabase.from('processed_events').insert({ event_id })
@@ -216,12 +240,12 @@ async function handleWebhook(req: Request): Promise<Response> {
   // filled quantity. (Alpaca spells the event 'canceled', one l.)
   const TERMINAL_EVENTS = ['fill', 'canceled', 'cancelled', 'expired']
   if (!TERMINAL_EVENTS.includes(event_type)) {
-    return jsonResponse({ ok: true, action: 'ignored_non_terminal' })
+    return { ok: true, action: 'ignored_non_terminal' }
   }
 
   const alpacaOrderId = order?.id
   if (!alpacaOrderId) {
-    return jsonResponse({ error: 'Event missing order id' }, 400)
+    return { ok: false, error: 'Event missing order id', status: 400 }
   }
 
   // ── Resolve OUR order row by the Alpaca order id (broker_order_ref) ──
@@ -236,7 +260,7 @@ async function handleWebhook(req: Request): Promise<Response> {
 
   if (orderErr || !orderRow) {
     console.error('[webhook] no local order for broker ref', alpacaOrderId, orderErr)
-    return jsonResponse({ error: 'No local order found for this fill' }, 422)
+    return { ok: false, error: 'No local order found for this fill', status: 422 }
   }
 
   // Alpaca reports fills in USD; convert before ANY position/P&L/donation math.
@@ -260,7 +284,7 @@ async function handleWebhook(req: Request): Promise<Response> {
     console.log('[webhook] terminal event with no fill', {
       order_id: orderRow.order_id, event_type, empty_status,
     })
-    return jsonResponse({ ok: true, action: 'closed_no_fill', status: empty_status })
+    return { ok: true, action: 'closed_no_fill' }
   }
 
   // Any terminal event that filled shares produced a position, so the order is
@@ -283,13 +307,13 @@ async function handleWebhook(req: Request): Promise<Response> {
 
     if (buyErr) {
       console.error('[webhook] record_buy_fill failed', buyErr)
-      return jsonResponse({ error: 'Failed to record buy fill' }, 500)
+      return { ok: false, error: 'Failed to record buy fill', status: 500 }
     }
 
     console.log('[webhook] buy fill recorded', {
       order_id: orderRow.order_id, qty, fill_price_gbp, final_status,
     })
-    return jsonResponse({ ok: true, action: 'position_updated', filled_qty: qty, status: final_status })
+    return { ok: true, action: 'position_updated' }
   }
 
   // ── SELL fill: realise P&L, calculate donation, record atomically ──
@@ -302,7 +326,7 @@ async function handleWebhook(req: Request): Promise<Response> {
 
   if (posErr || !position) {
     console.error('[webhook] position lookup failed', posErr)
-    return jsonResponse({ error: 'Position not found for this sell' }, 422)
+    return { ok: false, error: 'Position not found for this sell', status: 422 }
   }
 
   const avg_cost_gbp = position.avg_cost_gbp as number
@@ -338,10 +362,97 @@ async function handleWebhook(req: Request): Promise<Response> {
 
   if (rpcErr) {
     console.error('[webhook] record_fill_and_donation failed', rpcErr)
-    return jsonResponse({ error: 'Failed to record fill and donation' }, 500)
+    return { ok: false, error: 'Failed to record fill and donation', status: 500 }
   }
 
-  return jsonResponse({ ok: true, donation_gbp: result.donation_gbp, filled_qty: qty, status: final_status })
+  return { ok: true, action: 'donation_recorded' }
+}
+
+/**
+ * pollPendingFills
+ *
+ * Sweeps our pending orders and asks Alpaca for the current state of each.
+ * Any order Alpaca reports as terminal-with-fill is fed through
+ * processFillEvent as a synthesized webhook-shaped event — same pipeline the
+ * webhook would run, so the dedup guard makes duplicates across webhook + poll
+ * safe.
+ *
+ * This exists because Alpaca streams order events over websocket and does NOT
+ * POST to /webhook out of the box; without the poller, fills never land.
+ *
+ * REST-vs-webhook shape difference: the REST order object carries `status`
+ * (e.g. 'filled', 'canceled'), not the `event` field the webhook uses. We map
+ * status → event here so processFillEvent's TERMINAL_EVENTS filter still fires.
+ */
+async function pollPendingFills(): Promise<Response> {
+  const supabase = getSupabase()
+
+  const { data: pending, error: pendingErr } = await supabase
+    .from('orders')
+    .select('order_id, broker_order_ref, side')
+    .eq('status', 'pending')
+    .not('broker_order_ref', 'is', null)
+
+  if (pendingErr) {
+    console.error('[poll] failed to load pending orders', pendingErr)
+    return jsonResponse({ error: 'Failed to load pending orders' }, 500)
+  }
+
+  if (!pending || pending.length === 0) {
+    return jsonResponse({ ok: true, checked: 0, filled: 0 })
+  }
+
+  let checked = 0
+  let filled  = 0
+  let skipped = 0
+
+  for (const row of pending) {
+    checked++
+    try {
+      const alpacaOrder = await alpacaGet(`/v2/orders/${row.broker_order_ref}`)
+      const status     = alpacaOrder?.status as string | undefined
+      const filledQty  = parseFloat(alpacaOrder?.filled_qty ?? '0')
+
+      // Map REST status → webhook `event` shape. Anything non-terminal
+      // (new / accepted / pending_new / pending_cancel / replaced / …) is
+      // skipped — the next poll will pick it up if/when it terminates.
+      let eventName: string | null = null
+      if (status === 'filled') {
+        eventName = 'fill'
+      } else if ((status === 'canceled' || status === 'expired') && filledQty > 0) {
+        eventName = 'canceled'
+      }
+
+      if (!eventName) {
+        skipped++
+        continue
+      }
+
+      // Stable synthetic event_id: repeated polls of the same fill produce the
+      // same id, so the processed_events dedup makes re-runs a no-op. Note
+      // processFillEvent already falls back to order.id — set explicitly for
+      // clarity and to keep the "poll-" prefix visible in the audit table.
+      const synthesized: AlpacaOrderEvent = {
+        event:    eventName,
+        event_id: `poll-${alpacaOrder.id}-${alpacaOrder.filled_at}`,
+        order:    alpacaOrder as AlpacaOrder,
+      }
+
+      const result = await processFillEvent(synthesized)
+      if (result.ok) {
+        filled++
+      } else {
+        skipped++
+        console.error('[poll] processFillEvent returned error', row.broker_order_ref, result.error)
+      }
+    } catch (err) {
+      // One bad order must not abort the sweep — log and keep going.
+      skipped++
+      console.error('[poll] error checking order', row.broker_order_ref, err)
+    }
+  }
+
+  return jsonResponse({ ok: true, checked, filled, skipped })
 }
 
 // ─── Alpaca order event shape (partial) ──────────────────────────────────────
@@ -695,6 +806,11 @@ serve(async (req: Request) => {
   // ── Webhook route: POST /alpaca-trading/webhook ──
   if (req.method === 'POST' && url.pathname.endsWith('/webhook')) {
     return await handleWebhook(req)
+  }
+
+  // ── Poll route: POST /alpaca-trading/poll (driven by pg_cron) ──
+  if (req.method === 'POST' && url.pathname.endsWith('/poll')) {
+    return await pollPendingFills()
   }
 
   // ── Action proxy route ──
