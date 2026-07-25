@@ -208,7 +208,7 @@ export default function SellScreen() {
             Sell {qty} {ticker}. We'll update your portfolio when it fills.
           </Text>
           <TouchableOpacity
-            style={styles.primaryButton}
+            style={[styles.primaryButton, styles.resultButton]}
             activeOpacity={0.85}
             onPress={() => router.replace('/(app)/portfolio')}
           >
@@ -230,7 +230,7 @@ export default function SellScreen() {
           <Text style={styles.resultTitle}>Order not placed</Text>
           <Text style={styles.resultBody}>{errorMsg}</Text>
           <TouchableOpacity
-            style={styles.primaryButton}
+            style={[styles.primaryButton, styles.resultButton]}
             activeOpacity={0.85}
             onPress={() => setMode('review')}
           >
@@ -594,6 +594,7 @@ const styles = StyleSheet.create({
   editButtonLabel: { fontSize: 15, fontWeight: '600', color: '#9B9BB4' },
 
   // Result
+  resultButton: { flex: 0, alignSelf: 'stretch' },
   resultWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
   resultIcon: {
     width: 72,

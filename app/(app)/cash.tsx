@@ -142,7 +142,7 @@ export default function CashScreen() {
             cash is now {formatGbp(newBalance)}.
           </Text>
           <TouchableOpacity
-            style={styles.primaryButton}
+            style={[styles.primaryButton, styles.resultButton]}
             activeOpacity={0.85}
             onPress={() => router.replace('/(app)/portfolio')}
           >
@@ -164,7 +164,7 @@ export default function CashScreen() {
           <Text style={styles.resultTitle}>Nothing was moved</Text>
           <Text style={styles.resultBody}>{errorMsg}</Text>
           <TouchableOpacity
-            style={styles.primaryButton}
+            style={[styles.primaryButton, styles.resultButton]}
             activeOpacity={0.85}
             onPress={() => setMode('review')}
           >
@@ -495,6 +495,7 @@ const styles = StyleSheet.create({
   editButtonLabel: { fontSize: 15, fontWeight: '600', color: '#9B9BB4' },
 
   // ── Result (success / error) ──
+  resultButton: { flex: 0, alignSelf: 'stretch' },
   resultWrap: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: 32 },
   resultIcon: {
     width: 72,
