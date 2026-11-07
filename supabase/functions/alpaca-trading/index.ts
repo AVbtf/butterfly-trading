@@ -206,6 +206,7 @@ async function processFillEvent(event: AlpacaOrderEvent): Promise<{
   action?: string
   error?: string
   status?: number
+  donation_gbp?: number
 }> {
   const supabase = getSupabase()
 
