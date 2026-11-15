@@ -79,6 +79,14 @@ function usdToGbp(usd: number): number {
  */
 const COMMISSION_GBP = 5
 
+// ── Gate 2 (price & volatility) thresholds ──
+// Tunable defaults — these are placeholders, not a finalised risk policy.
+// TODO: move to config and set real values with the investment team.
+const GATE2_VOL_CEILING      = 0.25          // max annualised volatility (25%)
+const GATE2_MAX_DRAWDOWN     = 0.35          // max 12mo peak-to-trough drawdown (35%)
+const GATE2_MIN_AUM_GBP      = 100_000_000   // min fund AUM (£100m)
+const GATE2_MIN_BARS         = 60            // need at least this many bars to assess
+
 // ─── Headers ─────────────────────────────────────────────────────────────────
 
 const alpacaHeaders = {
@@ -162,6 +170,35 @@ function lookbackStart(timeframe: string, limit: number): string {
 
   const calendarDays = Math.ceil(daysPerBar * limit * 2) + 7
   return new Date(Date.now() - calendarDays * 86_400_000).toISOString()
+}
+
+/**
+ * Gate 2 metrics from a series of closing prices (oldest → newest).
+ * - annualised volatility: stdev of daily log returns × sqrt(252)
+ * - max drawdown: largest peak-to-trough decline over the series (as a positive fraction)
+ * Ratios are scale-invariant, so USD-vs-GBP of the inputs does not matter here.
+ */
+function computeGate2Metrics(closes: number[]): { volatility: number; maxDrawdown: number } {
+  // Daily log returns
+  const returns: number[] = []
+  for (let i = 1; i < closes.length; i++) {
+    if (closes[i - 1] > 0 && closes[i] > 0) returns.push(Math.log(closes[i] / closes[i - 1]))
+  }
+  const mean = returns.reduce((s, r) => s + r, 0) / (returns.length || 1)
+  const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / (returns.length > 1 ? returns.length - 1 : 1)
+  const volatility = Math.sqrt(variance) * Math.sqrt(252)
+
+  // Max drawdown
+  let peak = closes[0] ?? 0
+  let maxDrawdown = 0
+  for (const c of closes) {
+    if (c > peak) peak = c
+    if (peak > 0) {
+      const dd = (peak - c) / peak
+      if (dd > maxDrawdown) maxDrawdown = dd
+    }
+  }
+  return { volatility, maxDrawdown }
 }
 
 // ─── Donation logic ───────────────────────────────────────────────────────────
@@ -999,6 +1036,114 @@ async function handleAction(action: string, body: Record<string, unknown>) {
         accounts:  accountRows,
         orders:    orderRows,
         positions: positionRows,
+      }
+    }
+
+    /**
+     * run_gate2_check
+     * Re-runs Gate 2 (price & volatility) against live data for all products,
+     * or one product when `ticker` is supplied. Computes annualised volatility
+     * and max drawdown from ~12mo of daily bars (live, via the Alpaca data host)
+     * and checks AUM against the stored products.aum_gbp.
+     *
+     * Pass = volatility ≤ ceiling AND maxDrawdown ≤ limit AND aum ≥ minimum.
+     * Products that cannot be priced on the current endpoint (e.g. LSE/UCITS
+     * tickers on the US paper endpoint) are reported as 'insufficient_data' and
+     * their gate is LEFT UNCHANGED — we never fail a product we can't assess.
+     *
+     * On a product we CAN assess, this overwrites volatility_12m and
+     * max_drawdown_12m with the freshly computed live values and sets
+     * vol_gate_passed. AUM is the stored figure (TODO: live fundamentals).
+     */
+    case 'run_gate2_check': {
+      const { ticker } = body
+      const supabase = getSupabase()
+
+      let q = supabase.from('products').select('product_id, ticker, aum_gbp')
+      if (ticker) q = q.eq('ticker', ticker as string)
+      const { data: products, error: prodErr } = await q
+      if (prodErr) throw new Error(`Failed to load products: ${prodErr.message}`)
+
+      const report: Array<Record<string, unknown>> = []
+
+      for (const p of products ?? []) {
+        const row = p as Record<string, unknown>
+        const sym = row.ticker as string
+        const aum = row.aum_gbp != null ? Number(row.aum_gbp) : null
+
+        // Fetch ~12mo of daily bars for the symbol (reuses the get_bars pattern).
+        let closes: number[] = []
+        try {
+          const params = new URLSearchParams({
+            timeframe: '1Day',
+            limit:     '400',
+            sort:      'desc',
+            start:     lookbackStart('1Day', 400),
+          })
+          const raw = await alpacaGet(`/v2/stocks/${sym}/bars?${params.toString()}`, ALPACA_DATA_URL)
+          const bars: Array<Record<string, number>> = Array.isArray(raw?.bars) ? raw.bars : []
+          bars.reverse() // desc → asc (oldest first)
+          // Close prices; conversion is irrelevant for ratios, but keep GBP for stored metrics.
+          closes = bars.map((b) => usdToGbp(b.c as number)).filter((c) => Number.isFinite(c) && c > 0)
+        } catch (err) {
+          console.warn('[gate2] bars fetch failed for', sym, err)
+          closes = []
+        }
+
+        if (closes.length < GATE2_MIN_BARS) {
+          report.push({ ticker: sym, result: 'insufficient_data', bars: closes.length, aum_gbp: aum })
+          continue
+        }
+
+        const { volatility, maxDrawdown } = computeGate2Metrics(closes)
+
+        const volPass  = volatility <= GATE2_VOL_CEILING
+        const ddPass   = maxDrawdown <= GATE2_MAX_DRAWDOWN
+        const aumPass  = aum != null && aum >= GATE2_MIN_AUM_GBP
+        const passed   = volPass && ddPass && aumPass
+
+        // Round stored metrics to 4dp for tidiness.
+        const vol4 = Math.round(volatility * 10_000) / 10_000
+        const dd4  = Math.round(maxDrawdown * 10_000) / 10_000
+
+        const { error: updErr } = await supabase
+          .from('products')
+          .update({
+            volatility_12m:   vol4,
+            max_drawdown_12m: dd4,
+            vol_gate_passed:  passed,
+          })
+          .eq('product_id', row.product_id)
+
+        if (updErr) {
+          report.push({ ticker: sym, result: 'update_failed', error: updErr.message })
+          continue
+        }
+
+        report.push({
+          ticker:        sym,
+          result:        passed ? 'passed' : 'failed',
+          volatility:    vol4,
+          max_drawdown:  dd4,
+          aum_gbp:       aum,
+          checks:        { volatility: volPass, max_drawdown: ddPass, aum: aumPass },
+          bars:          closes.length,
+        })
+      }
+
+      const assessed = report.filter((r) => r.result === 'passed' || r.result === 'failed')
+      return {
+        generated_at: new Date().toISOString(),
+        thresholds: {
+          vol_ceiling:  GATE2_VOL_CEILING,
+          max_drawdown: GATE2_MAX_DRAWDOWN,
+          min_aum_gbp:  GATE2_MIN_AUM_GBP,
+        },
+        checked:   report.length,
+        assessed:  assessed.length,
+        passed:    assessed.filter((r) => r.result === 'passed').length,
+        failed:    assessed.filter((r) => r.result === 'failed').length,
+        report,
       }
     }
 
