@@ -47,6 +47,54 @@ export interface Portfolio {
   totalImpactGbp: number;
 }
 
+export interface StatementTrade {
+  date: string;
+  side: 'buy' | 'sell';
+  ticker: string | null;
+  name: string | null;
+  quantity: number;
+  fillPrice: number | null;
+  notionalGbp: number | null;
+  commissionGbp: number | null;
+  pnlGbp: number | null;
+  donation: { amountGbp: number; trigger: string; status: string } | null;
+}
+
+export interface StatementCashMovement {
+  date: string;
+  kind: string;
+  amountGbp: number;
+  balanceAfterGbp: number;
+  note: string | null;
+}
+
+export interface StatementDonation {
+  date: string;
+  amountGbp: number;
+  trigger: string;
+  status: string;
+  ticker: string | null;
+}
+
+export interface StatementData {
+  accountId: string;
+  currency: string;
+  generatedAt: string;
+  summary: {
+    currentCash: number;
+    totalDeposited: number;
+    totalWithdrawn: number;
+    totalInvested: number;
+    totalRealisedPnl: number;
+    totalDonated: number;
+    tradeCount: number;
+    donationCount: number;
+  };
+  cashMovements: StatementCashMovement[];
+  trades: StatementTrade[];
+  donations: StatementDonation[];
+}
+
 export interface PlaceOrderParams {
   accountId: string;
   symbol: string;
@@ -184,6 +232,73 @@ export const tradingService = {
         avgCostGbp: h.avg_cost_gbp,
         currentValueGbp: h.current_value_gbp,
         impactGbp: h.impact_gbp,
+      })),
+    };
+  },
+
+  /** Combined account + impact statement payload (all history). */
+  async getStatementData(accountId: string): Promise<StatementData> {
+    const data = await invokeAction<{
+      account_id: string;
+      currency: string;
+      generated_at: string;
+      summary: {
+        current_cash: number;
+        total_deposited: number;
+        total_withdrawn: number;
+        total_invested: number;
+        total_realised_pnl: number;
+        total_donated: number;
+        trade_count: number;
+        donation_count: number;
+      };
+      cash_movements: Array<{
+        date: string; kind: string; amount_gbp: number;
+        balance_after_gbp: number; note: string | null;
+      }>;
+      trades: Array<{
+        date: string; side: 'buy' | 'sell'; ticker: string | null;
+        name: string | null; quantity: number; fill_price: number | null;
+        notional_gbp: number | null; commission_gbp: number | null;
+        pnl_gbp: number | null;
+        donation: { amount_gbp: number; trigger: string; status: string } | null;
+      }>;
+      donations: Array<{
+        date: string; amount_gbp: number; trigger: string;
+        status: string; ticker: string | null;
+      }>;
+    }>('get_statement_data', { account_id: accountId });
+
+    return {
+      accountId: data.account_id,
+      currency: data.currency,
+      generatedAt: data.generated_at,
+      summary: {
+        currentCash: data.summary.current_cash,
+        totalDeposited: data.summary.total_deposited,
+        totalWithdrawn: data.summary.total_withdrawn,
+        totalInvested: data.summary.total_invested,
+        totalRealisedPnl: data.summary.total_realised_pnl,
+        totalDonated: data.summary.total_donated,
+        tradeCount: data.summary.trade_count,
+        donationCount: data.summary.donation_count,
+      },
+      cashMovements: data.cash_movements.map((m) => ({
+        date: m.date, kind: m.kind, amountGbp: m.amount_gbp,
+        balanceAfterGbp: m.balance_after_gbp, note: m.note,
+      })),
+      trades: data.trades.map((t) => ({
+        date: t.date, side: t.side, ticker: t.ticker, name: t.name,
+        quantity: t.quantity, fillPrice: t.fill_price,
+        notionalGbp: t.notional_gbp, commissionGbp: t.commission_gbp,
+        pnlGbp: t.pnl_gbp,
+        donation: t.donation
+          ? { amountGbp: t.donation.amount_gbp, trigger: t.donation.trigger, status: t.donation.status }
+          : null,
+      })),
+      donations: data.donations.map((d) => ({
+        date: d.date, amountGbp: d.amount_gbp, trigger: d.trigger,
+        status: d.status, ticker: d.ticker,
       })),
     };
   },

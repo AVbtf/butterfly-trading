@@ -171,6 +171,16 @@ export default function PortfolioScreen() {
             <Text style={styles.impactLabel}>Impact raised</Text>
             <Text style={styles.impactValue}>{gbp(portfolio?.totalImpactGbp ?? 0)}</Text>
           </View>
+
+          <TouchableOpacity
+            style={styles.statementBtn}
+            activeOpacity={0.7}
+            onPress={() => router.push('/(app)/statement')}
+          >
+            <Ionicons name="document-text-outline" size={14} color="#7C6FFF" />
+            <Text style={styles.statementBtnText}>View statement</Text>
+            <Ionicons name="chevron-forward" size={14} color="#7C6FFF" />
+          </TouchableOpacity>
         </View>
 
         {/* Holdings */}
@@ -290,6 +300,12 @@ const styles = StyleSheet.create({
   impactDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: '#7C6FFF' },
   impactLabel: { flex: 1, fontSize: 13, color: '#C4C4D4' },
   impactValue: { fontSize: 15, fontWeight: '600', color: '#FFFFFF' },
+  statementBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 12,
+    paddingVertical: 10, paddingHorizontal: 12, borderRadius: 10,
+    backgroundColor: 'rgba(124,111,255,0.10)', alignSelf: 'flex-start',
+  },
+  statementBtnText: { fontSize: 13, fontWeight: '600', color: '#7C6FFF' },
 
   // ── Section ──
   sectionTitle: { fontSize: 13, color: '#9B9BB4', marginBottom: 12, letterSpacing: 0.2 },
