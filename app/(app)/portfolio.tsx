@@ -16,7 +16,7 @@
  * Tapping a holding opens the Sell flow (app/(app)/sell/[id]).
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 import {
   View,
   Text,
@@ -27,7 +27,7 @@ import {
   ActivityIndicator,
   TouchableOpacity,
 } from 'react-native';
-import { router } from 'expo-router';
+import { router, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { tradingService, Holding, Portfolio } from '../../services/trading';
 
@@ -90,13 +90,23 @@ export default function PortfolioScreen() {
     }
   }, []);
 
-  useEffect(() => {
-    (async () => {
-      setLoading(true);
-      await load();
-      setLoading(false);
-    })();
-  }, [load]);
+  // Refetch whenever the screen regains focus (tab switch, or returning from
+  // a trade). Tabs stay mounted in expo-router, so a mount-only effect showed
+  // stale data after a buy/sell (the Nov milestone bug). `loading` starts true
+  // and is only flipped off here, so the first focus shows the spinner while
+  // later focus refetches update silently over existing data.
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      (async () => {
+        await load();
+        if (active) setLoading(false);
+      })();
+      return () => {
+        active = false;
+      };
+    }, [load]),
+  );
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
