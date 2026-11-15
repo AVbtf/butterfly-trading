@@ -95,6 +95,53 @@ export interface StatementData {
   donations: StatementDonation[];
 }
 
+export interface AdminAccount {
+  accountId: string;
+  type: string;
+  cashBalance: number;
+  currency: string;
+  status: string;
+  createdAt: string;
+}
+
+export interface AdminOrder {
+  orderId: string;
+  accountId: string;
+  ticker: string | null;
+  side: string;
+  quantity: number;
+  fillPrice: number | null;
+  notionalGbp: number | null;
+  commissionGbp: number | null;
+  pnlGbp: number | null;
+  status: string;
+  date: string;
+}
+
+export interface AdminPosition {
+  positionId: string;
+  accountId: string;
+  ticker: string | null;
+  quantity: number;
+  avgCostGbp: number;
+  currentValueGbp: number | null;
+  unrealisedPnl: number | null;
+  updatedAt: string;
+}
+
+export interface AdminOverview {
+  generatedAt: string;
+  summary: {
+    accountCount: number;
+    orderCount: number;
+    positionCount: number;
+    totalDonated: number;
+  };
+  accounts: AdminAccount[];
+  orders: AdminOrder[];
+  positions: AdminPosition[];
+}
+
 export interface PlaceOrderParams {
   accountId: string;
   symbol: string;
@@ -299,6 +346,41 @@ export const tradingService = {
       donations: data.donations.map((d) => ({
         date: d.date, amountGbp: d.amount_gbp, trigger: d.trigger,
         status: d.status, ticker: d.ticker,
+      })),
+    };
+  },
+
+  /** Dev-only cross-account admin overview (all accounts, orders, positions). */
+  async getAdminOverview(): Promise<AdminOverview> {
+    const data = await invokeAction<{
+      generated_at: string;
+      summary: { account_count: number; order_count: number; position_count: number; total_donated: number };
+      accounts: Array<{ account_id: string; type: string; cash_balance: number; currency: string; status: string; created_at: string }>;
+      orders: Array<{ order_id: string; account_id: string; ticker: string | null; side: string; quantity: number; fill_price: number | null; notional_gbp: number | null; commission_gbp: number | null; pnl_gbp: number | null; status: string; date: string }>;
+      positions: Array<{ position_id: string; account_id: string; ticker: string | null; quantity: number; avg_cost_gbp: number; current_value_gbp: number | null; unrealised_pnl: number | null; updated_at: string }>;
+    }>('get_admin_overview', {});
+
+    return {
+      generatedAt: data.generated_at,
+      summary: {
+        accountCount: data.summary.account_count,
+        orderCount: data.summary.order_count,
+        positionCount: data.summary.position_count,
+        totalDonated: data.summary.total_donated,
+      },
+      accounts: data.accounts.map((a) => ({
+        accountId: a.account_id, type: a.type, cashBalance: a.cash_balance,
+        currency: a.currency, status: a.status, createdAt: a.created_at,
+      })),
+      orders: data.orders.map((o) => ({
+        orderId: o.order_id, accountId: o.account_id, ticker: o.ticker, side: o.side,
+        quantity: o.quantity, fillPrice: o.fill_price, notionalGbp: o.notional_gbp,
+        commissionGbp: o.commission_gbp, pnlGbp: o.pnl_gbp, status: o.status, date: o.date,
+      })),
+      positions: data.positions.map((p) => ({
+        positionId: p.position_id, accountId: p.account_id, ticker: p.ticker,
+        quantity: p.quantity, avgCostGbp: p.avg_cost_gbp, currentValueGbp: p.current_value_gbp,
+        unrealisedPnl: p.unrealised_pnl, updatedAt: p.updated_at,
       })),
     };
   },

@@ -181,6 +181,15 @@ export default function PortfolioScreen() {
             <Text style={styles.statementBtnText}>View statement</Text>
             <Ionicons name="chevron-forward" size={14} color="#7C6FFF" />
           </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.adminBtn}
+            activeOpacity={0.7}
+            onPress={() => router.push('/(app)/admin')}
+          >
+            <Ionicons name="construct-outline" size={13} color="#9B9BB4" />
+            <Text style={styles.adminBtnText}>Admin (dev)</Text>
+          </TouchableOpacity>
         </View>
 
         {/* Holdings */}
@@ -306,6 +315,12 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(124,111,255,0.10)', alignSelf: 'flex-start',
   },
   statementBtnText: { fontSize: 13, fontWeight: '600', color: '#7C6FFF' },
+  adminBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10,
+    paddingVertical: 8, paddingHorizontal: 12, borderRadius: 10,
+    backgroundColor: 'rgba(255,255,255,0.04)', alignSelf: 'flex-start',
+  },
+  adminBtnText: { fontSize: 12, fontWeight: '600', color: '#9B9BB4' },
 
   // ── Section ──
   sectionTitle: { fontSize: 13, color: '#9B9BB4', marginBottom: 12, letterSpacing: 0.2 },

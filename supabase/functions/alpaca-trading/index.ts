@@ -915,6 +915,93 @@ async function handleAction(action: string, body: Record<string, unknown>) {
       }
     }
 
+    /**
+     * get_admin_overview
+     * Cross-account operational view for the (dev-only) in-app admin screen.
+     * Reads ALL accounts, orders and open positions — no account_id filter;
+     * service-role bypasses RLS. Read-only. Joins products for tickers.
+     * TODO: gate behind an admin role before production.
+     */
+    case 'get_admin_overview': {
+      const supabase = getSupabase()
+
+      const [{ data: accounts }, { data: orders }, { data: positions }, { data: donations }] =
+        await Promise.all([
+          supabase.from('accounts')
+            .select('account_id, type, cash_balance, currency, status, created_at'),
+          supabase.from('orders')
+            .select('order_id, account_id, side, quantity, fill_price, notional_gbp, commission_gbp, pnl_gbp, status, filled_at, placed_at, products(ticker)')
+            .order('placed_at', { ascending: false }),
+          supabase.from('positions')
+            .select('position_id, account_id, quantity, avg_cost_gbp, current_value_gbp, unrealised_pnl, updated_at, products(ticker)')
+            .gt('quantity', 0)
+            .order('updated_at', { ascending: false }),
+          supabase.from('donations')
+            .select('donation_amount_gbp'),
+        ])
+
+      const total_donated = (donations ?? [])
+        .reduce((s, d) => s + Number((d as Record<string, unknown>).donation_amount_gbp ?? 0), 0)
+
+      const accountRows = (accounts ?? []).map((a) => {
+        const row = a as Record<string, unknown>
+        return {
+          account_id:   row.account_id,
+          type:         row.type,
+          cash_balance: Number(row.cash_balance ?? 0),
+          currency:     row.currency ?? 'GBP',
+          status:       row.status,
+          created_at:   row.created_at,
+        }
+      })
+
+      const orderRows = (orders ?? []).map((o) => {
+        const row = o as Record<string, unknown>
+        const product = row.products as { ticker?: string } | null
+        return {
+          order_id:       row.order_id,
+          account_id:     row.account_id,
+          ticker:         product?.ticker ?? null,
+          side:           row.side,
+          quantity:       Number(row.quantity),
+          fill_price:     row.fill_price != null ? Number(row.fill_price) : null,
+          notional_gbp:   row.notional_gbp != null ? Number(row.notional_gbp) : null,
+          commission_gbp: row.commission_gbp != null ? Number(row.commission_gbp) : null,
+          pnl_gbp:        row.pnl_gbp != null ? Number(row.pnl_gbp) : null,
+          status:         row.status,
+          date:           row.filled_at ?? row.placed_at,
+        }
+      })
+
+      const positionRows = (positions ?? []).map((p) => {
+        const row = p as Record<string, unknown>
+        const product = row.products as { ticker?: string } | null
+        return {
+          position_id:       row.position_id,
+          account_id:        row.account_id,
+          ticker:            product?.ticker ?? null,
+          quantity:          Number(row.quantity),
+          avg_cost_gbp:      Number(row.avg_cost_gbp),
+          current_value_gbp: row.current_value_gbp != null ? Number(row.current_value_gbp) : null,
+          unrealised_pnl:    row.unrealised_pnl != null ? Number(row.unrealised_pnl) : null,
+          updated_at:        row.updated_at,
+        }
+      })
+
+      return {
+        generated_at: new Date().toISOString(),
+        summary: {
+          account_count:  accountRows.length,
+          order_count:    orderRows.length,
+          position_count: positionRows.length,
+          total_donated,
+        },
+        accounts:  accountRows,
+        orders:    orderRows,
+        positions: positionRows,
+      }
+    }
+
     default:
       throw new Error(`Unknown action: ${action}`)
   }
