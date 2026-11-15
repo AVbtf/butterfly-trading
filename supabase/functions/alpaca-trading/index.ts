@@ -780,6 +780,141 @@ async function handleAction(action: string, body: Record<string, unknown>) {
       }
     }
 
+    /**
+     * get_statement_data
+     * Combined account + impact statement payload (all history for an account).
+     * Pure read, service-role. Aggregates cash_transactions + orders + donations
+     * into one structured object the statement screen and PDF both render from.
+     * Sells are linked to their realised pnl_gbp AND the donation they generated
+     * (donations.order_id → orders.order_id) — the impact-led story per trade.
+     * All amounts are already GBP in the DB; no FX conversion here.
+     */
+    case 'get_statement_data': {
+      const { account_id } = body
+      if (!account_id) throw new Error('get_statement_data requires: account_id')
+      const supabase = getSupabase()
+
+      const [{ data: account }, { data: cashTx }, { data: orders }, { data: donations }] =
+        await Promise.all([
+          supabase.from('accounts')
+            .select('cash_balance, currency')
+            .eq('account_id', account_id).maybeSingle(),
+          supabase.from('cash_transactions')
+            .select('amount_gbp, balance_after_gbp, kind, note, created_at')
+            .eq('account_id', account_id)
+            .order('created_at', { ascending: false }),
+          supabase.from('orders')
+            .select('order_id, side, quantity, fill_price, notional_gbp, commission_gbp, pnl_gbp, status, filled_at, placed_at, products(ticker, name)')
+            .eq('account_id', account_id)
+            .eq('status', 'filled')
+            .order('filled_at', { ascending: false }),
+          supabase.from('donations')
+            .select('order_id, donation_amount_gbp, trigger, status, created_at')
+            .eq('account_id', account_id)
+            .order('created_at', { ascending: false }),
+        ])
+
+      // Index donations by the order that generated them (sells link via order_id).
+      const donationByOrder: Record<string, Record<string, unknown>> = {}
+      for (const d of donations ?? []) {
+        const oid = (d as Record<string, unknown>).order_id as string | null
+        if (oid) donationByOrder[oid] = d as Record<string, unknown>
+      }
+
+      // ── Cash movements (deposits / withdrawals only; settlements are shown as trades) ──
+      const SETTLEMENT_KINDS = ['buy_settlement', 'sell_settlement']
+      const cash_movements = (cashTx ?? [])
+        .filter((t) => !SETTLEMENT_KINDS.includes((t as Record<string, unknown>).kind as string))
+        .map((t) => {
+          const row = t as Record<string, unknown>
+          return {
+            date:              row.created_at,
+            kind:              row.kind,
+            amount_gbp:        Number(row.amount_gbp),
+            balance_after_gbp: Number(row.balance_after_gbp),
+            note:              row.note ?? null,
+          }
+        })
+
+      // ── Trades (filled buys & sells), each sell carrying its realised P&L + donation ──
+      const trades = (orders ?? []).map((o) => {
+        const row = o as Record<string, unknown>
+        const product = row.products as { ticker?: string; name?: string } | null
+        const side = row.side as string
+        const d = donationByOrder[row.order_id as string]
+        return {
+          date:            row.filled_at ?? row.placed_at,
+          side,
+          ticker:          product?.ticker ?? null,
+          name:            product?.name ?? null,
+          quantity:        Number(row.quantity),
+          fill_price:      row.fill_price != null ? Number(row.fill_price) : null,
+          notional_gbp:    row.notional_gbp != null ? Number(row.notional_gbp) : null,
+          commission_gbp:  row.commission_gbp != null ? Number(row.commission_gbp) : null,
+          pnl_gbp:         side === 'sell' && row.pnl_gbp != null ? Number(row.pnl_gbp) : null,
+          donation:        d
+            ? {
+                amount_gbp: Number(d.donation_amount_gbp),
+                trigger:    d.trigger,
+                status:     d.status,
+              }
+            : null,
+        }
+      })
+
+      // ── Flat donations list (for the impact section), with ticker where resolvable ──
+      const tickerByOrder: Record<string, string | null> = {}
+      for (const o of orders ?? []) {
+        const row = o as Record<string, unknown>
+        const product = row.products as { ticker?: string } | null
+        tickerByOrder[row.order_id as string] = product?.ticker ?? null
+      }
+      const donationList = (donations ?? []).map((d) => {
+        const row = d as Record<string, unknown>
+        return {
+          date:       row.created_at,
+          amount_gbp: Number(row.donation_amount_gbp),
+          trigger:    row.trigger,
+          status:     row.status,
+          ticker:     tickerByOrder[row.order_id as string] ?? null,
+        }
+      })
+
+      // ── Summary totals ──
+      let total_deposited = 0
+      let total_withdrawn = 0
+      for (const m of cash_movements) {
+        if (m.amount_gbp >= 0) total_deposited += m.amount_gbp
+        else total_withdrawn += Math.abs(m.amount_gbp)
+      }
+      let total_invested = 0
+      let total_realised_pnl = 0
+      for (const t of trades) {
+        if (t.side === 'buy') total_invested += (t.notional_gbp ?? 0) + (t.commission_gbp ?? 0)
+        if (t.side === 'sell' && t.pnl_gbp != null) total_realised_pnl += t.pnl_gbp
+      }
+      const total_donated = donationList.reduce((s, d) => s + d.amount_gbp, 0)
+
+      return {
+        account_id,
+        currency:     account?.currency ?? 'GBP',
+        generated_at: new Date().toISOString(),
+        summary: {
+          current_cash:        Number(account?.cash_balance ?? 0),
+          total_deposited,
+          total_withdrawn,
+          total_invested,
+          total_realised_pnl,
+          total_donated,
+          trade_count:         trades.length,
+          donation_count:      donationList.length,
+        },
+        cash_movements,
+        trades,
+        donations: donationList,
+      }
+    }
+
     default:
       throw new Error(`Unknown action: ${action}`)
   }
